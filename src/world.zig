@@ -166,6 +166,8 @@ const Chunk = struct {
     last_used: u64,
 };
 
+const RawTileGrid = [chunk_size + 2][chunk_size + 2]RawTile;
+
 const ClimateSample = struct {
     elevation: f32,
     moisture: f32,
@@ -263,12 +265,28 @@ pub const World = struct {
     fn populateChunk(self: *World, chunk: *Chunk) void {
         const origin_x = chunk.coord.x * chunk_size_i32;
         const origin_y = chunk.coord.y * chunk_size_i32;
+        var raw_tiles: RawTileGrid = undefined;
+
+        for (0..chunk_size + 2) |raw_y_idx| {
+            const world_y = origin_y + @as(i32, @intCast(raw_y_idx)) - 1;
+            for (0..chunk_size + 2) |raw_x_idx| {
+                const world_x = origin_x + @as(i32, @intCast(raw_x_idx)) - 1;
+                raw_tiles[raw_y_idx][raw_x_idx] = sampleRawTile(self.seed, world_x, world_y);
+            }
+        }
 
         for (0..chunk_size) |y_idx| {
             const world_y = origin_y + @as(i32, @intCast(y_idx));
             for (0..chunk_size) |x_idx| {
                 const world_x = origin_x + @as(i32, @intCast(x_idx));
-                chunk.tiles[y_idx][x_idx] = synthesizeTile(self.seed, world_x, world_y);
+                chunk.tiles[y_idx][x_idx] = synthesizeTileFromRawGrid(
+                    self.seed,
+                    world_x,
+                    world_y,
+                    &raw_tiles,
+                    x_idx + 1,
+                    y_idx + 1,
+                );
             }
         }
     }
@@ -451,6 +469,34 @@ fn synthesizeTile(seed: u64, x: i32, y: i32) Tile {
 
     if (raw.terrain != .water and raw.terrain != .mountain and raw.terrain != .river) {
         const wet_neighbors = rawAdjacentCount(seed, x, y, .water) + rawAdjacentCount(seed, x, y, .river);
+        if (wet_neighbors >= 2 and raw.elevation < 132 and raw.terrain != .ruins) {
+            raw.terrain = .marsh;
+            raw.moisture = @max(raw.moisture, 190);
+        } else if (wet_neighbors >= 1 and raw.terrain == .plains and raw.moisture > 150) {
+            raw.terrain = .forest;
+        }
+    }
+
+    const biome = classifyBiome(raw.region, raw.terrain, raw.elevation, raw.moisture);
+    const cover = classifyCover(seed, biome, raw.terrain, x, y, raw.elevation, raw.moisture);
+
+    return .{
+        .terrain = raw.terrain,
+        .biome = biome,
+        .cover = cover,
+        .variation = raw.variation,
+        .region = raw.region,
+        .elevation = raw.elevation,
+        .moisture = raw.moisture,
+    };
+}
+
+fn synthesizeTileFromRawGrid(seed: u64, x: i32, y: i32, raw_tiles: *const RawTileGrid, raw_x: usize, raw_y: usize) Tile {
+    var raw = raw_tiles.*[raw_y][raw_x];
+
+    if (raw.terrain != .water and raw.terrain != .mountain and raw.terrain != .river) {
+        const wet_neighbors = rawAdjacentCountFromGrid(raw_tiles, raw_x, raw_y, .water) +
+            rawAdjacentCountFromGrid(raw_tiles, raw_x, raw_y, .river);
         if (wet_neighbors >= 2 and raw.elevation < 132 and raw.terrain != .ruins) {
             raw.terrain = .marsh;
             raw.moisture = @max(raw.moisture, 190);
@@ -736,6 +782,22 @@ fn rawAdjacentCount(seed: u64, x: i32, y: i32, terrain: Terrain) u8 {
     return count;
 }
 
+fn rawAdjacentCountFromGrid(raw_tiles: *const RawTileGrid, raw_x: usize, raw_y: usize, terrain: Terrain) u8 {
+    var count: u8 = 0;
+    var dy: i32 = -1;
+    while (dy <= 1) : (dy += 1) {
+        var dx: i32 = -1;
+        while (dx <= 1) : (dx += 1) {
+            if (dx == 0 and dy == 0) continue;
+
+            const sample_x: usize = @intCast(@as(i32, @intCast(raw_x)) + dx);
+            const sample_y: usize = @intCast(@as(i32, @intCast(raw_y)) + dy);
+            if (raw_tiles.*[sample_y][sample_x].terrain == terrain) count += 1;
+        }
+    }
+    return count;
+}
+
 fn countAdjacent(self: *World, coord: Coord, terrain: Terrain) u8 {
     var count: u8 = 0;
     var dy: i32 = -1;
@@ -922,4 +984,31 @@ test "world generation remains feature rich near the starting frontier" {
     try std.testing.expect(plains_tree > total_tiles / 1400);
     try std.testing.expect(terrainWalkable(generated.terrainAt(generated.spawn.x, generated.spawn.y)));
     try std.testing.expect(generated.objective.x > generated.spawn.x);
+}
+
+test "chunk synthesis reuses raw samples without changing tile output" {
+    const seed = default_seed;
+    const coord = ChunkCoord{ .x = 2, .y = -1 };
+    const origin_x = coord.x * chunk_size_i32;
+    const origin_y = coord.y * chunk_size_i32;
+    var raw_tiles: RawTileGrid = undefined;
+
+    for (0..chunk_size + 2) |raw_y_idx| {
+        const world_y = origin_y + @as(i32, @intCast(raw_y_idx)) - 1;
+        for (0..chunk_size + 2) |raw_x_idx| {
+            const world_x = origin_x + @as(i32, @intCast(raw_x_idx)) - 1;
+            raw_tiles[raw_y_idx][raw_x_idx] = sampleRawTile(seed, world_x, world_y);
+        }
+    }
+
+    for (0..chunk_size) |y_idx| {
+        const world_y = origin_y + @as(i32, @intCast(y_idx));
+        for (0..chunk_size) |x_idx| {
+            const world_x = origin_x + @as(i32, @intCast(x_idx));
+            try std.testing.expectEqualDeep(
+                synthesizeTile(seed, world_x, world_y),
+                synthesizeTileFromRawGrid(seed, world_x, world_y, &raw_tiles, x_idx + 1, y_idx + 1),
+            );
+        }
+    }
 }
