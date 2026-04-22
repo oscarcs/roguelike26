@@ -36,6 +36,7 @@ pub fn main() !void {
 
     var state = try game.Game.init(allocator);
     defer state.deinit();
+    var ui_cache: game.view.Cache = .{};
 
     while (true) {
         switch (loop.nextEvent()) {
@@ -43,22 +44,19 @@ pub fn main() !void {
                 if (key.matches('c', .{ .ctrl = true })) break;
 
                 if (state.command_mode) {
-                    try state.handleCommandKey(key);
+                    if (try state.handleCommandKey(key) == .quit) break;
                 } else {
-                    switch (game.input.actionForKey(key)) {
-                        .quit => break,
-                        .redraw => vx.queueRefresh(),
-                        .start_command => state.beginCommandMode(),
-                        .move => |delta| state.moveBy(delta.dx, delta.dy),
-                        .none => {},
-                    }
+                    const intent = game.input.actionForKey(key);
+                    if (intent == .redraw) vx.queueRefresh();
+                    if (try state.applyIntent(intent) == .quit) break;
                 }
             },
             .winsize => |ws| try vx.resize(allocator, tty.writer(), ws),
             .focus_in => vx.queueRefresh(),
         }
 
-        game.render.draw(vx.window(), &state);
+        const presentation = ui_cache.present(&state);
+        game.render.draw(vx.window(), presentation);
         try vx.render(tty.writer());
     }
 }
