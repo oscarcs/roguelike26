@@ -4,6 +4,7 @@ const game = @import("game.zig");
 
 const minimum_width: u16 = 72;
 const minimum_height: u16 = 24;
+const panel_border_color = rgb(0xff, 0xff, 0xff);
 const inventory_lines = [_][]const u8{
     "1. Iron sword",
     "2. Weather cloak",
@@ -24,8 +25,7 @@ const Layout = struct {
     stats: Rect,
     overworld: Rect,
     minimap: Rect,
-    region: Rect,
-    world: Rect,
+    details: Rect,
     log: Rect,
     inventory: Rect,
 };
@@ -43,8 +43,7 @@ pub fn draw(root: vaxis.Window, state: *game.Game) void {
     drawStatsPanel(root, state, layout.stats);
     drawOverworld(root, state, layout.overworld);
     drawMiniMap(root, state, layout.minimap);
-    drawRegionPanel(root, state, layout.region);
-    drawWorldPanel(root, state, layout.world);
+    drawDetailsPanel(root, state, layout.details);
     drawLogPanel(root, state, layout.log);
     drawInventoryPanel(root, layout.inventory);
 }
@@ -75,15 +74,12 @@ fn computeLayout(root: vaxis.Window) Layout {
         minimap_height = top_height / 2;
     }
     const detail_height = top_height - minimap_height;
-    const region_height = detail_height / 2;
-    const world_height = detail_height - region_height;
 
     return .{
         .stats = .{ .x = 0, .y = 0, .width = left_width, .height = top_height },
         .overworld = .{ .x = left_width, .y = 0, .width = middle_width, .height = top_height },
         .minimap = .{ .x = right_x, .y = 0, .width = right_width, .height = minimap_height },
-        .region = .{ .x = right_x, .y = minimap_height, .width = right_width, .height = region_height },
-        .world = .{ .x = right_x, .y = minimap_height + region_height, .width = right_width, .height = world_height },
+        .details = .{ .x = right_x, .y = minimap_height, .width = right_width, .height = detail_height },
         .log = .{ .x = 0, .y = top_height, .width = left_width + middle_width, .height = bottom_height },
         .inventory = .{ .x = right_x, .y = top_height, .width = right_width, .height = bottom_height },
     };
@@ -97,7 +93,7 @@ fn drawResizeNotice(root: vaxis.Window) void {
         .height = root.height -| 2,
         .border = .{
             .where = .all,
-            .style = .{ .fg = rgb(0x90, 0xd0, 0xff) },
+            .style = .{ .fg = panel_border_color },
         },
     });
 
@@ -112,7 +108,7 @@ fn drawResizeNotice(root: vaxis.Window) void {
 }
 
 fn drawStatsPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
-    const panel = makePanel(root, rect, "Character", rgb(0x79, 0xc7, 0xff));
+    const panel = makePanel(root, rect, "Character");
 
     var line: u16 = 0;
     drawMeter(panel, &line, "HP", state.hpText(), state.hp, game.max_hp, rgb(0xff, 0x8f, 0x8f));
@@ -125,7 +121,7 @@ fn drawStatsPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
 }
 
 fn drawOverworld(root: vaxis.Window, state: *game.Game, rect: Rect) void {
-    const panel = makePanel(root, rect, "Overworld", rgb(0xf5, 0xe9, 0x8a));
+    const panel = makePanel(root, rect, null);
     if (panel.width == 0 or panel.height == 0) return;
 
     const map_view = panel.child(.{
@@ -160,7 +156,7 @@ fn drawOverworld(root: vaxis.Window, state: *game.Game, rect: Rect) void {
 }
 
 fn drawMiniMap(root: vaxis.Window, state: *game.Game, rect: Rect) void {
-    const panel = makePanel(root, rect, "Mini Map", rgb(0x79, 0xc7, 0xff));
+    const panel = makePanel(root, rect, "Minimap");
     if (panel.width == 0 or panel.height == 0) return;
 
     var row: u16 = 0;
@@ -184,55 +180,59 @@ fn drawMiniMap(root: vaxis.Window, state: *game.Game, rect: Rect) void {
     }
 }
 
-fn drawRegionPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
-    const panel = makePanel(root, rect, "Region", rgb(0x7e, 0xf0, 0xa0));
+fn drawDetailsPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
+    const panel = makePanel(root, rect, "Region");
 
-    _ = panel.printSegment(.{
+    var row: u16 = 0;
+
+    const name_result = panel.printSegment(.{
         .text = game.regionName(state.currentRegion()),
         .style = .{ .fg = rgb(0xf5, 0xe9, 0x8a), .bold = true },
-    }, .{ .row_offset = 0, .wrap = .word });
+    }, .{ .row_offset = row, .wrap = .word });
+    row = name_result.row + 2;
 
-    _ = panel.printSegment(.{
+    const summary_result = panel.printSegment(.{
         .text = state.regionSummary(),
         .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
-    }, .{ .row_offset = 2, .wrap = .word });
+    }, .{ .row_offset = row, .wrap = .word });
+    row = summary_result.row + 2;
 
-    _ = panel.printSegment(.{
+    const landmark_result = panel.printSegment(.{
         .text = state.currentLandmark(),
         .style = .{ .fg = rgb(0x79, 0xc7, 0xff) },
-    }, .{ .row_offset = 5, .wrap = .word });
-}
+    }, .{ .row_offset = row, .wrap = .word });
+    row = landmark_result.row + 2;
 
-fn drawWorldPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
-    const panel = makePanel(root, rect, "World Info", rgb(0xff, 0xa0, 0x7a));
-
-    _ = panel.printSegment(.{
-        .text = "Here",
+    const here_label = panel.printSegment(.{
+        .text = "Here: ",
         .style = .{ .fg = rgb(0xf5, 0xe9, 0x8a), .bold = true },
-    }, .{ .row_offset = 0, .wrap = .none });
-    _ = panel.printSegment(.{
+    }, .{ .row_offset = row, .wrap = .none });
+    const tile_result = panel.printSegment(.{
         .text = state.currentTileText(),
         .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
-    }, .{ .row_offset = 1, .wrap = .word });
+    }, .{ .row_offset = row, .col_offset = here_label.col, .wrap = .word });
+    row = tile_result.row + 1;
 
-    _ = panel.printSegment(.{
+    const detail_result = panel.printSegment(.{
         .text = state.currentDetailText(),
         .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
-    }, .{ .row_offset = 2, .wrap = .word });
+    }, .{ .row_offset = row, .wrap = .word });
+    row = detail_result.row + 1;
 
-    _ = panel.printSegment(.{
+    const coords_result = panel.printSegment(.{
         .text = state.coordsText(),
         .style = .{ .fg = rgb(0x88, 0x99, 0xaa) },
-    }, .{ .row_offset = 3, .wrap = .none });
+    }, .{ .row_offset = row, .wrap = .none });
+    row = coords_result.row + 2;
 
     _ = panel.printSegment(.{
         .text = state.objective(),
         .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
-    }, .{ .row_offset = 4, .wrap = .word });
+    }, .{ .row_offset = row, .wrap = .word });
 }
 
 fn drawLogPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
-    const panel = makePanel(root, rect, "Message Log", rgb(0x90, 0xd0, 0xff));
+    const panel = makePanel(root, rect, "Message Log");
     if (panel.width == 0 or panel.height == 0) return;
 
     const command_height: u16 = if (panel.height > 5) 3 else 2;
@@ -256,7 +256,7 @@ fn drawLogPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
         .height = command_height,
         .border = .{
             .where = .top,
-            .style = .{ .fg = rgb(0x3f, 0x57, 0x71) },
+            .style = .{ .fg = panel_border_color },
         },
     });
 
@@ -293,7 +293,7 @@ fn drawLogPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
 }
 
 fn drawInventoryPanel(root: vaxis.Window, rect: Rect) void {
-    const panel = makePanel(root, rect, "Inventory", rgb(0xff, 0xa0, 0x7a));
+    const panel = makePanel(root, rect, "Inventory");
 
     var row: u16 = 0;
     for (inventory_lines) |item| {
@@ -306,7 +306,7 @@ fn drawInventoryPanel(root: vaxis.Window, rect: Rect) void {
     }
 }
 
-fn makePanel(root: vaxis.Window, rect: Rect, title: []const u8, border_color: vaxis.Color) vaxis.Window {
+fn makePanel(root: vaxis.Window, rect: Rect, title: ?[]const u8) vaxis.Window {
     const inner = root.child(.{
         .x_off = @intCast(rect.x),
         .y_off = @intCast(rect.y),
@@ -314,11 +314,11 @@ fn makePanel(root: vaxis.Window, rect: Rect, title: []const u8, border_color: va
         .height = rect.height,
         .border = .{
             .where = .all,
-            .style = .{ .fg = border_color },
+            .style = .{ .fg = panel_border_color },
         },
     });
 
-    if (rect.width > 4 and rect.height > 0) {
+    if (title) |label| if (rect.width > 4 and rect.height > 0 and label.len > 0) {
         const title_win = root.child(.{
             .x_off = @intCast(rect.x + 2),
             .y_off = @intCast(rect.y),
@@ -326,10 +326,10 @@ fn makePanel(root: vaxis.Window, rect: Rect, title: []const u8, border_color: va
             .height = 1,
         });
         _ = title_win.printSegment(.{
-            .text = title,
-            .style = .{ .fg = border_color, .bold = true, .bg = rgb(0x0f, 0x14, 0x1d) },
+            .text = label,
+            .style = .{ .fg = panel_border_color, .bold = true, .bg = rgb(0x0f, 0x14, 0x1d) },
         }, .{ .row_offset = 0, .wrap = .none });
-    }
+    };
 
     return inner;
 }
