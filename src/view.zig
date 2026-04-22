@@ -127,7 +127,6 @@ pub fn buildInto(summary: *Summary, state: *game.Game) void {
             });
         }
     }
-
 }
 
 fn fmt(line: *TextLine, comptime format: []const u8, args: anytype) usize {
@@ -135,7 +134,7 @@ fn fmt(line: *TextLine, comptime format: []const u8, args: anytype) usize {
 }
 
 test "inventory summary formats starter kit entries" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer _ = gpa.deinit();
 
     var state = try game.Game.init(gpa.allocator());

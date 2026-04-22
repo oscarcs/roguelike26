@@ -9,7 +9,7 @@ const Event = union(enum) {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer {
         const status = gpa.deinit();
         if (status == .leak) std.log.err("memory leak detected", .{});
