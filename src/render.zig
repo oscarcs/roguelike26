@@ -111,7 +111,7 @@ fn drawResizeNotice(root: vaxis.Window) void {
     }, .{ .row_offset = 3, .wrap = .word });
 }
 
-fn drawStatsPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
+fn drawStatsPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
     const panel = makePanel(root, rect, "Character", rgb(0x79, 0xc7, 0xff));
 
     var line: u16 = 0;
@@ -124,7 +124,7 @@ fn drawStatsPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void 
     drawValue(panel, &line, "Turn", state.turnText());
 }
 
-fn drawOverworld(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
+fn drawOverworld(root: vaxis.Window, state: *game.Game, rect: Rect) void {
     const panel = makePanel(root, rect, "Overworld", rgb(0xf5, 0xe9, 0x8a));
     if (panel.width == 0 or panel.height == 0) return;
 
@@ -133,53 +133,49 @@ fn drawOverworld(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
         .height = panel.height,
     });
 
-    const start_x = cameraOrigin(state.player_x, map_view.width, game.world_width);
-    const start_y = cameraOrigin(state.player_y, map_view.height, game.world_height);
-    const visible_width = @min(map_view.width, game.world_width - start_x);
-    const visible_height = @min(map_view.height, game.world_height - start_y);
+    const start_x = cameraOrigin(state.player_x, map_view.width);
+    const start_y = cameraOrigin(state.player_y, map_view.height);
 
     var row: u16 = 0;
-    while (row < visible_height) : (row += 1) {
-        const world_y = start_y + row;
+    while (row < map_view.height) : (row += 1) {
+        const world_y = start_y + @as(i32, @intCast(row));
         var col: u16 = 0;
-        while (col < visible_width) : (col += 1) {
-            const world_x = start_x + col;
+        while (col < map_view.width) : (col += 1) {
+            const world_x = start_x + @as(i32, @intCast(col));
             const tile = state.tileAt(world_x, world_y);
             map_view.writeCell(col, row, overworldCell(tile));
         }
     }
 
-    const player_col = state.player_x - start_x;
-    const player_row = state.player_y - start_y;
-    if (player_col < map_view.width and player_row < map_view.height) {
-        map_view.writeCell(player_col, player_row, .{
-            .char = .{ .grapheme = "@", .width = 1 },
-            .style = .{
-                .fg = rgb(0x20, 0x1f, 0x18),
-                .bg = rgb(0xff, 0x76, 0x6b),
-                .bold = true,
-            },
-        });
-    }
+    const player_col: u16 = @intCast(state.player_x - start_x);
+    const player_row: u16 = @intCast(state.player_y - start_y);
+    map_view.writeCell(player_col, player_row, .{
+        .char = .{ .grapheme = "@", .width = 1 },
+        .style = .{
+            .fg = rgb(0x20, 0x1f, 0x18),
+            .bg = rgb(0xff, 0x76, 0x6b),
+            .bold = true,
+        },
+    });
 }
 
-fn drawMiniMap(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
+fn drawMiniMap(root: vaxis.Window, state: *game.Game, rect: Rect) void {
     const panel = makePanel(root, rect, "Mini Map", rgb(0x79, 0xc7, 0xff));
     if (panel.width == 0 or panel.height == 0) return;
 
     var row: u16 = 0;
     while (row < panel.height) : (row += 1) {
-        const world_y = row * game.world_height / @max(panel.height, 1);
+        const world_y = minimapSampleCoord(state.player_y, row, panel.height, game.minimap_span_y);
         var col: u16 = 0;
         while (col < panel.width) : (col += 1) {
-            const world_x = col * game.world_width / @max(panel.width, 1);
+            const world_x = minimapSampleCoord(state.player_x, col, panel.width, game.minimap_span_x);
             const terrain = state.terrainAt(world_x, world_y);
             panel.writeCell(col, row, minimapCell(terrain));
         }
     }
 
-    const player_col = state.player_x * panel.width / game.world_width;
-    const player_row = state.player_y * panel.height / game.world_height;
+    const player_col = panel.width / 2;
+    const player_row = panel.height / 2;
     if (player_col < panel.width and player_row < panel.height) {
         panel.writeCell(player_col, player_row, .{
             .char = .{ .grapheme = "@", .width = 1 },
@@ -188,7 +184,7 @@ fn drawMiniMap(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
     }
 }
 
-fn drawRegionPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
+fn drawRegionPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
     const panel = makePanel(root, rect, "Region", rgb(0x7e, 0xf0, 0xa0));
 
     _ = panel.printSegment(.{
@@ -207,7 +203,7 @@ fn drawRegionPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void
     }, .{ .row_offset = 5, .wrap = .word });
 }
 
-fn drawWorldPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
+fn drawWorldPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
     const panel = makePanel(root, rect, "World Info", rgb(0xff, 0xa0, 0x7a));
 
     _ = panel.printSegment(.{
@@ -230,7 +226,7 @@ fn drawWorldPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void 
     }, .{ .row_offset = 3, .wrap = .none });
 
     _ = panel.printSegment(.{
-        .text = "Goal: reach the spire to the east.",
+        .text = state.objective(),
         .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
     }, .{ .row_offset = 4, .wrap = .word });
 }
@@ -398,13 +394,15 @@ fn drawMeterBar(win: vaxis.Window, row: u16, value: u16, max_value: u16, color: 
     });
 }
 
-fn cameraOrigin(player: u16, viewport: u16, world: u16) u16 {
-    if (viewport >= world) return 0;
+fn cameraOrigin(player: i32, viewport: u16) i32 {
+    return player - @divFloor(@as(i32, @intCast(viewport)), 2);
+}
 
-    const half = viewport / 2;
-    if (player <= half) return 0;
-    if (player + half >= world) return world - viewport;
-    return player - half;
+fn minimapSampleCoord(center: i32, position: u16, extent: u16, span: i32) i32 {
+    if (extent <= 1) return center;
+
+    const offset = @divTrunc(@as(i32, @intCast(position)) * span, @as(i32, @intCast(extent - 1))) - @divTrunc(span, 2);
+    return center + offset;
 }
 
 fn overworldCell(tile: game.Tile) vaxis.Cell {

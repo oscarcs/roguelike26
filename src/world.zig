@@ -1,10 +1,12 @@
 const std = @import("std");
 
-pub const width: usize = 256;
-pub const height: usize = 160;
-pub const width_u16: u16 = 256;
-pub const height_u16: u16 = 160;
+pub const chunk_size: usize = 64;
+pub const chunk_size_i32: i32 = 64;
 pub const default_seed: u64 = 0x26cafe5eed1234ab;
+
+const chunk_cache_limit: usize = 96;
+const atlas_cell_size: i32 = 96;
+const atlas_cell_size_f32: f32 = 96.0;
 
 pub const Terrain = enum(u8) {
     plains,
@@ -55,8 +57,8 @@ pub const Region = enum(u8) {
 };
 
 pub const Coord = struct {
-    x: u16,
-    y: u16,
+    x: i32,
+    y: i32,
 };
 
 pub const Tile = struct {
@@ -77,7 +79,6 @@ pub const RegionInfo = struct {
 
 const RegionConfig = struct {
     region: Region,
-    anchor: Coord,
     info: RegionInfo,
     elevation_bias: f32,
     moisture_bias: f32,
@@ -89,7 +90,6 @@ const RegionConfig = struct {
 const region_configs = [_]RegionConfig{
     .{
         .region = .ember_fields,
-        .anchor = .{ .x = width_u16 * 14 / 100, .y = height_u16 * 31 / 100 },
         .info = .{
             .name = "Ember Fields",
             .summary = "Wind-cut grasslands, scattered stone circles, and dry hillocks surround the western approach.",
@@ -103,7 +103,6 @@ const region_configs = [_]RegionConfig{
     },
     .{
         .region = .mistwood,
-        .anchor = .{ .x = width_u16 * 30 / 100, .y = height_u16 * 20 / 100 },
         .info = .{
             .name = "Mistwood",
             .summary = "Dense tree cover and wet gullies create sheltered routes through the northern interior.",
@@ -117,7 +116,6 @@ const region_configs = [_]RegionConfig{
     },
     .{
         .region = .glass_marsh,
-        .anchor = .{ .x = width_u16 * 43 / 100, .y = height_u16 * 78 / 100 },
         .info = .{
             .name = "Glass Marsh",
             .summary = "Flooded flats, reed beds, and silt-heavy channels spread across the southern basin.",
@@ -131,7 +129,6 @@ const region_configs = [_]RegionConfig{
     },
     .{
         .region = .iron_ridge,
-        .anchor = .{ .x = width_u16 * 69 / 100, .y = height_u16 * 23 / 100 },
         .info = .{
             .name = "Iron Ridge",
             .summary = "A bent mountain spine throws off rocky foothills, narrow saddles, and cold runoff.",
@@ -145,7 +142,6 @@ const region_configs = [_]RegionConfig{
     },
     .{
         .region = .dusk_road,
-        .anchor = .{ .x = width_u16 * 86 / 100, .y = height_u16 * 59 / 100 },
         .info = .{
             .name = "Dusk Road",
             .summary = "Broken roadbeds, terraces, and waystations trace the safer eastern passage toward the spire.",
@@ -159,283 +155,221 @@ const region_configs = [_]RegionConfig{
     },
 };
 
-pub const World = struct {
-    seed: u64,
-    tiles: [height][width]Tile = undefined,
-    spawn: Coord = .{ .x = 6, .y = height_u16 / 2 },
-    objective: Coord = .{ .x = width_u16 - 10, .y = height_u16 / 2 },
+const ChunkCoord = struct {
+    x: i32,
+    y: i32,
+};
 
-    pub fn init(seed: u64) World {
-        var self = World{ .seed = seed };
-        self.generate();
-        return self;
-    }
-
-    pub fn tileAt(self: *const World, x: u16, y: u16) Tile {
-        return self.tiles[@as(usize, y)][@as(usize, x)];
-    }
-
-    pub fn terrainAt(self: *const World, x: u16, y: u16) Terrain {
-        return self.tileAt(x, y).terrain;
-    }
-
-    pub fn biomeAt(self: *const World, x: u16, y: u16) Biome {
-        return self.tileAt(x, y).biome;
-    }
-
-    pub fn coverAt(self: *const World, x: u16, y: u16) Cover {
-        return self.tileAt(x, y).cover;
-    }
-
-    pub fn regionAt(self: *const World, x: u16, y: u16) Region {
-        return self.tileAt(x, y).region;
-    }
-
-    pub fn regionInfoAt(self: *const World, x: u16, y: u16) RegionInfo {
-        return regionInfo(self.regionAt(x, y));
-    }
-
-    fn generate(self: *World) void {
-        self.populateBaseTiles();
-        self.applyRivers();
-        self.applyWetlandPass();
-        self.ensureRoutes();
-        self.spawn = self.findSpawn();
-        self.objective = self.findObjective();
-    }
-
-    fn populateBaseTiles(self: *World) void {
-        for (0..height) |y_idx| {
-            const y: u16 = @intCast(y_idx);
-            for (0..width) |x_idx| {
-                const x: u16 = @intCast(x_idx);
-                const region = selectRegion(self.seed, x, y);
-                const config = configForRegion(region);
-                const climate = sampleClimate(self.seed, config, x, y);
-
-                self.tiles[y_idx][x_idx] = .{
-                    .terrain = classifyTerrain(self.seed, config, climate, x, y),
-                    .biome = undefined,
-                    .cover = undefined,
-                    .variation = variationForCoord(self.seed, x, y),
-                    .region = region,
-                    .elevation = toByte(climate.elevation),
-                    .moisture = toByte(climate.moisture),
-                };
-                self.refreshVisuals(x, y);
-            }
-        }
-    }
-
-    fn applyRivers(self: *World) void {
-        var sources: [8]?Coord = [_]?Coord{null} ** 8;
-        var scores: [8]f32 = [_]f32{-1.0} ** 8;
-
-        for (2..height - 2) |y_idx| {
-            for (2..width - 2) |x_idx| {
-                const tile = self.tiles[y_idx][x_idx];
-                if (tile.terrain != .hills) continue;
-                if (tile.elevation < 176 or tile.moisture < 110) continue;
-                if (!isLocalHighPoint(self, @intCast(x_idx), @intCast(y_idx))) continue;
-
-                var score = byteToUnit(tile.elevation) * 0.75 + byteToUnit(tile.moisture) * 0.25;
-                if (tile.region == .iron_ridge) score += 0.12;
-
-                const coord: Coord = .{ .x = @intCast(x_idx), .y = @intCast(y_idx) };
-                insertRiverSource(&sources, &scores, coord, score);
-            }
-        }
-
-        for (sources, 0..) |source_opt, index| {
-            if (source_opt) |source| {
-                const outlet = chooseRiverOutlet(self.seed, source, index);
-                self.ensureOutletWater(outlet);
-                _ = self.carveRiver(source, outlet);
-            }
-        }
-    }
-
-    fn applyWetlandPass(self: *World) void {
-        for (0..height) |y_idx| {
-            for (0..width) |x_idx| {
-                const coord: Coord = .{ .x = @intCast(x_idx), .y = @intCast(y_idx) };
-                var tile = &self.tiles[y_idx][x_idx];
-
-                if (tile.terrain == .water or tile.terrain == .mountain or tile.terrain == .river) continue;
-
-                const wet_neighbors = countAdjacent(self, coord, .water) + countAdjacent(self, coord, .river);
-                if (wet_neighbors >= 2 and tile.elevation < 132 and tile.terrain != .ruins) {
-                    tile.terrain = .marsh;
-                    tile.moisture = @max(tile.moisture, 190);
-                    self.refreshVisuals(coord.x, coord.y);
-                    continue;
-                }
-
-                if (wet_neighbors >= 1 and tile.terrain == .plains and tile.moisture > 150) {
-                    tile.terrain = .forest;
-                    self.refreshVisuals(coord.x, coord.y);
-                }
-            }
-        }
-    }
-
-    fn ensureRoutes(self: *World) void {
-        const y = self.findCentralPassageRow();
-        var x: usize = 2;
-        while (x < width - 2) : (x += 1) {
-            var tile = &self.tiles[y][x];
-            if (tile.terrain == .water or tile.terrain == .mountain) {
-                tile.terrain = if (tile.region == .dusk_road) .ruins else .plains;
-                tile.elevation = @min(tile.elevation, 172);
-                tile.moisture = @min(tile.moisture, 150);
-                self.refreshVisuals(@intCast(x), @intCast(y));
-            }
-        }
-    }
-
-    fn carveRiver(self: *World, source: Coord, outlet: Coord) bool {
-        var visited = [_][width]bool{[_]bool{false} ** width} ** height;
-        var path: [512]Coord = undefined;
-        var len: usize = 0;
-        var current = source;
-
-        while (len < path.len) {
-            if (visited[@as(usize, current.y)][@as(usize, current.x)]) break;
-            visited[@as(usize, current.y)][@as(usize, current.x)] = true;
-            path[len] = current;
-            len += 1;
-
-            if (current.x == outlet.x and current.y == outlet.y) break;
-
-            const next = chooseRiverStep(self, current, outlet, &visited) orelse break;
-            current = next;
-
-            if (self.terrainAt(current.x, current.y) == .water) {
-                path[len - 1] = current;
-                break;
-            }
-        }
-
-        if (len < 8) return false;
-
-        for (path[0..len]) |coord| {
-            var tile = &self.tiles[@as(usize, coord.y)][@as(usize, coord.x)];
-            if (tile.terrain == .water or tile.terrain == .mountain) continue;
-            tile.terrain = .river;
-            tile.moisture = @max(tile.moisture, 210);
-            tile.elevation = @min(tile.elevation, 168);
-            self.refreshVisuals(coord.x, coord.y);
-        }
-        return true;
-    }
-
-    fn ensureOutletWater(self: *World, outlet: Coord) void {
-        var tile = &self.tiles[@as(usize, outlet.y)][@as(usize, outlet.x)];
-        tile.terrain = .water;
-        tile.elevation = @min(tile.elevation, 76);
-        tile.moisture = @max(tile.moisture, 210);
-        self.refreshVisuals(outlet.x, outlet.y);
-    }
-
-    fn findSpawn(self: *const World) Coord {
-        var best = Coord{ .x = 6, .y = height_u16 / 2 };
-        var best_score: i32 = std.math.minInt(i32);
-
-        for (10..height - 10) |y_idx| {
-            for (12..width / 3) |x_idx| {
-                const coord: Coord = .{ .x = @intCast(x_idx), .y = @intCast(y_idx) };
-                const tile = self.tiles[y_idx][x_idx];
-                if (!terrainWalkable(tile.terrain)) continue;
-
-                const edge_distance = @min(@min(x_idx, width - 1 - x_idx), @min(y_idx, height - 1 - y_idx));
-                var score: i32 = 180 - @as(i32, @intCast(x_idx));
-                switch (tile.terrain) {
-                    .plains => score += 30,
-                    .forest => score += 18,
-                    .ruins => score += 22,
-                    .hills => score += 8,
-                    .marsh, .river => score -= 8,
-                    else => {},
-                }
-                score += @as(i32, @intCast(edge_distance)) * 3;
-                score += 6 * countAdjacentWalkable(self, coord);
-                score -= 12 * @as(i32, countAdjacent(self, coord, .water));
-
-                if (score > best_score) {
-                    best = coord;
-                    best_score = score;
-                }
-            }
-        }
-        return best;
-    }
-
-    fn findObjective(self: *const World) Coord {
-        var best = Coord{ .x = width_u16 - 8, .y = height_u16 / 2 };
-        var best_score: i32 = std.math.minInt(i32);
-
-        for (10..height - 10) |y_idx| {
-            for (width * 2 / 3..width - 12) |x_idx| {
-                const coord: Coord = .{ .x = @intCast(x_idx), .y = @intCast(y_idx) };
-                const tile = self.tiles[y_idx][x_idx];
-                if (!terrainWalkable(tile.terrain)) continue;
-
-                const edge_distance = @min(@min(x_idx, width - 1 - x_idx), @min(y_idx, height - 1 - y_idx));
-                var score: i32 = @as(i32, @intCast(x_idx)) * 2;
-                if (tile.region == .dusk_road) score += 40;
-                switch (tile.terrain) {
-                    .ruins => score += 36,
-                    .hills => score += 18,
-                    .plains => score += 12,
-                    .forest => score += 4,
-                    .river, .marsh => score -= 8,
-                    else => {},
-                }
-                score += @as(i32, @intCast(edge_distance)) * 2;
-
-                if (score > best_score) {
-                    best = coord;
-                    best_score = score;
-                }
-            }
-        }
-        return best;
-    }
-
-    fn findCentralPassageRow(self: *const World) usize {
-        var best_row: usize = height / 2;
-        var best_score: i32 = std.math.minInt(i32);
-
-        for (height / 4..height * 3 / 4) |y_idx| {
-            var row_score: i32 = 0;
-            for (0..width) |x_idx| {
-                const terrain = self.tiles[y_idx][x_idx].terrain;
-                row_score += switch (terrain) {
-                    .plains, .ruins => 3,
-                    .forest, .hills => 2,
-                    .river, .marsh => 1,
-                    .water, .mountain => -4,
-                };
-            }
-            if (row_score > best_score) {
-                best_score = row_score;
-                best_row = y_idx;
-            }
-        }
-        return best_row;
-    }
-
-    fn refreshVisuals(self: *World, x: u16, y: u16) void {
-        var tile = &self.tiles[@as(usize, y)][@as(usize, x)];
-        tile.biome = classifyBiome(tile.region, tile.terrain, tile.elevation, tile.moisture);
-        tile.cover = classifyCover(self.seed, tile.biome, tile.terrain, x, y, tile.elevation, tile.moisture);
-    }
+const Chunk = struct {
+    coord: ChunkCoord,
+    tiles: [chunk_size][chunk_size]Tile,
+    last_used: u64,
 };
 
 const ClimateSample = struct {
     elevation: f32,
     moisture: f32,
     ridge: f32,
+};
+
+const RawTile = struct {
+    terrain: Terrain,
+    region: Region,
+    variation: u8,
+    elevation: u8,
+    moisture: u8,
+};
+
+pub const World = struct {
+    allocator: std.mem.Allocator,
+    seed: u64,
+    chunks: std.AutoHashMap(ChunkCoord, *Chunk),
+    tick: u64 = 0,
+    spawn: Coord = .{ .x = 0, .y = 0 },
+    objective: Coord = .{ .x = 240, .y = 0 },
+
+    pub fn init(allocator: std.mem.Allocator, seed: u64) !World {
+        var self = World{
+            .allocator = allocator,
+            .seed = seed,
+            .chunks = std.AutoHashMap(ChunkCoord, *Chunk).init(allocator),
+        };
+
+        self.spawn = self.findSpawn();
+        self.objective = self.findObjective(self.spawn);
+        return self;
+    }
+
+    pub fn deinit(self: *World) void {
+        var iterator = self.chunks.valueIterator();
+        while (iterator.next()) |chunk_ptr| {
+            self.allocator.destroy(chunk_ptr.*);
+        }
+        self.chunks.deinit();
+    }
+
+    pub fn tileAt(self: *World, x: i32, y: i32) Tile {
+        const chunk = self.fetchChunkForCoord(x, y) catch unreachable;
+        const local_x = localCoord(x);
+        const local_y = localCoord(y);
+        return chunk.tiles[local_y][local_x];
+    }
+
+    pub fn terrainAt(self: *World, x: i32, y: i32) Terrain {
+        return self.tileAt(x, y).terrain;
+    }
+
+    pub fn biomeAt(self: *World, x: i32, y: i32) Biome {
+        return self.tileAt(x, y).biome;
+    }
+
+    pub fn coverAt(self: *World, x: i32, y: i32) Cover {
+        return self.tileAt(x, y).cover;
+    }
+
+    pub fn regionAt(self: *World, x: i32, y: i32) Region {
+        return self.tileAt(x, y).region;
+    }
+
+    pub fn regionInfoAt(self: *World, x: i32, y: i32) RegionInfo {
+        return regionInfo(self.regionAt(x, y));
+    }
+
+    fn fetchChunkForCoord(self: *World, x: i32, y: i32) !*Chunk {
+        return self.fetchChunk(chunkCoordForWorld(x, y));
+    }
+
+    fn fetchChunk(self: *World, coord: ChunkCoord) !*Chunk {
+        if (self.chunks.get(coord)) |chunk| {
+            chunk.last_used = self.bumpTick();
+            return chunk;
+        }
+
+        if (self.chunks.count() >= chunk_cache_limit) {
+            self.evictOldestChunk();
+        }
+
+        const chunk = try self.allocator.create(Chunk);
+        chunk.* = .{
+            .coord = coord,
+            .tiles = undefined,
+            .last_used = self.bumpTick(),
+        };
+        self.populateChunk(chunk);
+        try self.chunks.put(coord, chunk);
+        return chunk;
+    }
+
+    fn populateChunk(self: *World, chunk: *Chunk) void {
+        const origin_x = chunk.coord.x * chunk_size_i32;
+        const origin_y = chunk.coord.y * chunk_size_i32;
+
+        for (0..chunk_size) |y_idx| {
+            const world_y = origin_y + @as(i32, @intCast(y_idx));
+            for (0..chunk_size) |x_idx| {
+                const world_x = origin_x + @as(i32, @intCast(x_idx));
+                chunk.tiles[y_idx][x_idx] = synthesizeTile(self.seed, world_x, world_y);
+            }
+        }
+    }
+
+    fn evictOldestChunk(self: *World) void {
+        var iterator = self.chunks.iterator();
+        var oldest_coord: ?ChunkCoord = null;
+        var oldest_tick: u64 = std.math.maxInt(u64);
+
+        while (iterator.next()) |entry| {
+            if (entry.value_ptr.*.last_used < oldest_tick) {
+                oldest_tick = entry.value_ptr.*.last_used;
+                oldest_coord = entry.key_ptr.*;
+            }
+        }
+
+        if (oldest_coord) |coord| {
+            const chunk = self.chunks.fetchRemove(coord).?.value;
+            self.allocator.destroy(chunk);
+        }
+    }
+
+    fn bumpTick(self: *World) u64 {
+        self.tick +%= 1;
+        return self.tick;
+    }
+
+    fn findSpawn(self: *World) Coord {
+        var best = Coord{ .x = -24, .y = 0 };
+        var best_score: i32 = std.math.minInt(i32);
+
+        var y: i32 = -54;
+        while (y <= 54) : (y += 1) {
+            var x: i32 = -48;
+            while (x <= 24) : (x += 1) {
+                const coord = Coord{ .x = x, .y = y };
+                const tile = self.tileAt(coord.x, coord.y);
+                if (!terrainWalkable(tile.terrain)) continue;
+
+                var score: i32 = 0;
+                score -= @as(i32, @intCast(@abs(coord.x))) * 2;
+                score -= @as(i32, @intCast(@abs(coord.y)));
+                score += 12 * @as(i32, countAdjacentWalkable(self, coord));
+                score -= 16 * @as(i32, countAdjacent(self, coord, .water));
+
+                switch (tile.terrain) {
+                    .plains => score += 32,
+                    .forest => score += 20,
+                    .ruins => score += 26,
+                    .hills => score += 8,
+                    .marsh, .river => score -= 10,
+                    else => {},
+                }
+
+                if (tile.region == .ember_fields or tile.region == .mistwood) score += 10;
+
+                if (score > best_score) {
+                    best = coord;
+                    best_score = score;
+                }
+            }
+        }
+
+        return best;
+    }
+
+    fn findObjective(self: *World, spawn: Coord) Coord {
+        var best = Coord{ .x = spawn.x + 240, .y = @intFromFloat(@round(roadCenter(self.seed, spawn.x + 240))) };
+        var best_score: i32 = std.math.minInt(i32);
+
+        var y: i32 = spawn.y - 72;
+        while (y <= spawn.y + 72) : (y += 1) {
+            var x: i32 = spawn.x + 180;
+            while (x <= spawn.x + 320) : (x += 1) {
+                const coord = Coord{ .x = x, .y = y };
+                const tile = self.tileAt(coord.x, coord.y);
+                if (!terrainWalkable(tile.terrain)) continue;
+
+                var score: i32 = coord.x - spawn.x;
+                score -= @as(i32, @intCast(@abs(coord.y - @as(i32, @intFromFloat(@round(roadCenter(self.seed, coord.x))))))) * 2;
+                score += 8 * @as(i32, countAdjacentWalkable(self, coord));
+
+                if (tile.region == .dusk_road) score += 56;
+                switch (tile.terrain) {
+                    .ruins => score += 36,
+                    .hills => score += 18,
+                    .plains => score += 10,
+                    .forest => score += 2,
+                    .river, .marsh => score -= 12,
+                    else => {},
+                }
+
+                if (score > best_score) {
+                    best = coord;
+                    best_score = score;
+                }
+            }
+        }
+
+        return best;
+    }
 };
 
 pub fn randomSeed() u64 {
@@ -512,28 +446,103 @@ fn configForRegion(region: Region) *const RegionConfig {
     return &region_configs[@intFromEnum(region)];
 }
 
-fn sampleClimate(seed: u64, config: *const RegionConfig, x: u16, y: u16) ClimateSample {
-    const fx = axisUnit(x, width_u16);
-    const fy = axisUnit(y, height_u16);
-    const warp_x = fx + (fractalNoise(seed ^ 0x9989d3f1bb39f243, fx * 2.2, fy * 2.2, 3, 2.0, 0.5) - 0.5) * 0.18;
-    const warp_y = fy + (fractalNoise(seed ^ 0x7b1f7cf8e812d4c1, fx * 2.2, fy * 2.2, 3, 2.0, 0.5) - 0.5) * 0.16;
+fn synthesizeTile(seed: u64, x: i32, y: i32) Tile {
+    var raw = sampleRawTile(seed, x, y);
 
-    const continental = fractalNoise(seed ^ 0x4137ba5dc9185f1f, warp_x * 2.4, warp_y * 2.0, 4, 2.0, 0.52);
-    const relief = fractalNoise(seed ^ 0xa2d4d0c5e45c1d77, warp_x * 6.5, warp_y * 6.5, 3, 2.2, 0.55);
-    const moisture_base = fractalNoise(seed ^ 0x51f12d6efc2fb6d3, warp_x * 2.5, warp_y * 2.7, 4, 2.0, 0.54);
-    const moisture_detail = fractalNoise(seed ^ 0x8cf0e0fb2f50a991, warp_x * 7.8, warp_y * 7.2, 2, 2.0, 0.5);
+    if (raw.terrain != .water and raw.terrain != .mountain and raw.terrain != .river) {
+        const wet_neighbors = rawAdjacentCount(seed, x, y, .water) + rawAdjacentCount(seed, x, y, .river);
+        if (wet_neighbors >= 2 and raw.elevation < 132 and raw.terrain != .ruins) {
+            raw.terrain = .marsh;
+            raw.moisture = @max(raw.moisture, 190);
+        } else if (wet_neighbors >= 1 and raw.terrain == .plains and raw.moisture > 150) {
+            raw.terrain = .forest;
+        }
+    }
 
-    const ridge_center = 0.20 + 0.14 * fractalNoise(seed ^ 0xee7cb53129b2b4e7, warp_x * 1.6, 0.0, 3, 2.0, 0.5) + warp_x * 0.34;
+    const biome = classifyBiome(raw.region, raw.terrain, raw.elevation, raw.moisture);
+    const cover = classifyCover(seed, biome, raw.terrain, x, y, raw.elevation, raw.moisture);
+
+    return .{
+        .terrain = raw.terrain,
+        .biome = biome,
+        .cover = cover,
+        .variation = raw.variation,
+        .region = raw.region,
+        .elevation = raw.elevation,
+        .moisture = raw.moisture,
+    };
+}
+
+fn sampleRawTile(seed: u64, x: i32, y: i32) RawTile {
+    const variation = variationForCoord(seed, x, y);
+    const base_climate = sampleBaseClimate(seed, x, y);
+    const region = selectRegion(seed, base_climate, x, y);
+    const config = configForRegion(region);
+    const climate = applyRegionBias(base_climate, config);
+
+    var terrain = classifyTerrain(seed, config, climate, x, y);
+    var elevation = toByte(climate.elevation);
+    var moisture = toByte(climate.moisture);
+
+    const road_distance = roadDistance(seed, x, y);
+    if (region == .dusk_road and road_distance < 2.2 and terrain != .river) {
+        terrain = if (climate.moisture > 0.48 and climate.elevation < 0.58) .plains else .ruins;
+        elevation = @min(elevation, 168);
+        moisture = @min(moisture, 160);
+    } else if (region == .dusk_road and road_distance < 5.0 and (terrain == .water or terrain == .mountain)) {
+        terrain = .plains;
+        elevation = @min(elevation, 172);
+        moisture = @min(moisture, 150);
+    }
+
+    const river_strength = riverStrength(seed, x, y);
+    if (terrain != .mountain and road_distance > 1.5 and climate.elevation > 0.29 and climate.elevation < 0.80 and climate.moisture > 0.42) {
+        if (river_strength > 0.94 and climate.elevation < 0.40) {
+            terrain = .water;
+            elevation = @min(elevation, 76);
+            moisture = @max(moisture, 210);
+        } else if (river_strength > 0.84) {
+            terrain = .river;
+            elevation = @min(elevation, 168);
+            moisture = @max(moisture, 210);
+        }
+    }
+
+    if (terrain == .water) {
+        elevation = @min(elevation, 76);
+        moisture = @max(moisture, 210);
+    }
+
+    return .{
+        .terrain = terrain,
+        .region = region,
+        .variation = variation,
+        .elevation = elevation,
+        .moisture = moisture,
+    };
+}
+
+fn sampleBaseClimate(seed: u64, x: i32, y: i32) ClimateSample {
+    const fx = coordScale(x, 320.0);
+    const fy = coordScale(y, 280.0);
+    const warp_x = fx + (fractalNoise(seed ^ 0x9989d3f1bb39f243, fx * 0.95, fy * 0.95, 3, 2.0, 0.5) - 0.5) * 0.42;
+    const warp_y = fy + (fractalNoise(seed ^ 0x7b1f7cf8e812d4c1, fx * 0.95, fy * 0.95, 3, 2.0, 0.5) - 0.5) * 0.38;
+
+    const continental = fractalNoise(seed ^ 0x4137ba5dc9185f1f, warp_x * 1.10, warp_y * 1.00, 4, 2.0, 0.52);
+    const relief = fractalNoise(seed ^ 0xa2d4d0c5e45c1d77, warp_x * 3.30, warp_y * 3.30, 3, 2.2, 0.55);
+    const moisture_base = fractalNoise(seed ^ 0x51f12d6efc2fb6d3, warp_x * 1.25, warp_y * 1.35, 4, 2.0, 0.54);
+    const moisture_detail = fractalNoise(seed ^ 0x8cf0e0fb2f50a991, warp_x * 3.80, warp_y * 3.60, 2, 2.0, 0.5);
+
+    const ridge_center = (fractalNoise(seed ^ 0xee7cb53129b2b4e7, warp_x * 0.72, 0.0, 3, 2.0, 0.5) - 0.5) * 1.25;
     const ridge_distance = @abs(warp_y - ridge_center);
-    const ridge_band = clamp01(1.0 - ridge_distance / 0.16);
-    const ridge = ridge_band * ridge_band * smoothstep(0.38, 0.92, warp_x);
+    const ridge_band = clamp01(1.0 - ridge_distance / 0.22);
+    const ridge = ridge_band * ridge_band;
 
-    const basin = fractalNoise(seed ^ 0x1ac0f1d7e96c4b2d, warp_x * 1.8, warp_y * 1.6, 3, 2.0, 0.5);
+    const basin = fractalNoise(seed ^ 0x1ac0f1d7e96c4b2d, warp_x * 0.90, warp_y * 0.90, 3, 2.0, 0.5);
     const basin_cut = smoothstep(0.70, 0.98, basin) * 0.22;
 
-    var elevation = 0.14 + continental * 0.50 + relief * 0.14 + config.elevation_bias + ridge * config.ridge_bias - basin_cut;
-    var moisture = 0.30 + moisture_base * 0.48 + moisture_detail * 0.12 + config.moisture_bias;
-
+    var elevation = 0.16 + continental * 0.48 + relief * 0.18 + ridge * 0.18 - basin_cut;
+    var moisture = 0.28 + moisture_base * 0.48 + moisture_detail * 0.12;
     if (ridge > 0.32) moisture -= ridge * 0.10;
 
     elevation = clamp01(elevation);
@@ -546,16 +555,91 @@ fn sampleClimate(seed: u64, config: *const RegionConfig, x: u16, y: u16) Climate
     };
 }
 
-fn classifyTerrain(seed: u64, config: *const RegionConfig, climate: ClimateSample, x: u16, y: u16) Terrain {
-    const region_index: f32 = @floatFromInt(@intFromEnum(config.region));
-    const ruin_noise = fractalNoise(seed ^ 0xd93b4f5a8b1f9c73, axisUnit(x, width_u16) * 8.0 + region_index, axisUnit(y, height_u16) * 8.0 - region_index, 2, 2.0, 0.5);
+fn applyRegionBias(base: ClimateSample, config: *const RegionConfig) ClimateSample {
+    const elevation = base.elevation + config.elevation_bias + base.ridge * config.ridge_bias * 0.42;
+    var moisture = base.moisture + config.moisture_bias;
+    if (base.ridge > 0.32) moisture -= base.ridge * 0.08;
 
-    if (climate.elevation < 0.31) return .water;
-    if (climate.elevation > 0.80 or climate.ridge > 0.82) return .mountain;
-    if (climate.elevation > 0.66 or climate.ridge > 0.52) return .hills;
-    if (climate.moisture > 0.73 and climate.elevation < 0.47) return .marsh;
+    return .{
+        .elevation = clamp01(elevation),
+        .moisture = clamp01(moisture),
+        .ridge = base.ridge,
+    };
+}
+
+fn selectRegion(seed: u64, climate: ClimateSample, x: i32, y: i32) Region {
+    const road_distance = roadDistance(seed, x, y);
+    if (road_distance < 6.5 and x > -48) return .dusk_road;
+
+    const cell_x = @divFloor(x, atlas_cell_size);
+    const cell_y = @divFloor(y, atlas_cell_size);
+    var best = Region.ember_fields;
+    var best_score = std.math.inf(f32);
+
+    var dy: i32 = -1;
+    while (dy <= 1) : (dy += 1) {
+        var dx: i32 = -1;
+        while (dx <= 1) : (dx += 1) {
+            const atlas_x = cell_x + dx;
+            const atlas_y = cell_y + dy;
+            const candidate = atlasRegion(seed, atlas_x, atlas_y);
+            const center_x = (@as(f32, @floatFromInt(atlas_x)) + 0.5) * atlas_cell_size_f32 + atlasJitter(seed ^ 0x8c0f24f1ad0ea76b, atlas_x, atlas_y);
+            const center_y = (@as(f32, @floatFromInt(atlas_y)) + 0.5) * atlas_cell_size_f32 + atlasJitter(seed ^ 0x3b6d0fca0de6b785, atlas_x, atlas_y);
+            const delta_x = @as(f32, @floatFromInt(x)) - center_x;
+            const delta_y = @as(f32, @floatFromInt(y)) - center_y;
+            const distance_score = delta_x * delta_x + delta_y * delta_y;
+            const total_score = distance_score + regionPenalty(candidate, climate, road_distance);
+
+            if (total_score < best_score) {
+                best_score = total_score;
+                best = candidate;
+            }
+        }
+    }
+
+    return best;
+}
+
+fn atlasRegion(seed: u64, cell_x: i32, cell_y: i32) Region {
+    return switch (mix(seed ^ 0x5ad26b9f67bbd271, cell_x, cell_y) & 3) {
+        0 => .ember_fields,
+        1 => .mistwood,
+        2 => .glass_marsh,
+        else => .iron_ridge,
+    };
+}
+
+fn atlasJitter(seed: u64, cell_x: i32, cell_y: i32) f32 {
+    return (hash01(seed, cell_x, cell_y) - 0.5) * @as(f32, @floatFromInt(atlas_cell_size)) * 0.55;
+}
+
+fn regionPenalty(region: Region, climate: ClimateSample, road_distance: f32) f32 {
+    return switch (region) {
+        .ember_fields => climate.moisture * 1450.0 + climate.ridge * 340.0,
+        .mistwood => @abs(climate.moisture - 0.68) * 800.0 + climate.ridge * 180.0,
+        .glass_marsh => @abs(climate.moisture - 0.82) * 700.0 + @abs(climate.elevation - 0.30) * 1000.0,
+        .iron_ridge => @abs(climate.elevation - 0.76) * 900.0 + @abs(climate.ridge - 0.72) * 850.0,
+        .dusk_road => road_distance * 80.0,
+    };
+}
+
+fn classifyTerrain(seed: u64, config: *const RegionConfig, climate: ClimateSample, x: i32, y: i32) Terrain {
+    const region_index: f32 = @floatFromInt(@intFromEnum(config.region));
+    const ruin_noise = fractalNoise(
+        seed ^ 0xd93b4f5a8b1f9c73,
+        coordScale(x, 38.0) + region_index * 0.5,
+        coordScale(y, 38.0) - region_index * 0.5,
+        2,
+        2.0,
+        0.5,
+    );
+
+    if (climate.elevation < 0.28) return .water;
+    if (climate.elevation > 0.82 or climate.ridge > 0.86) return .mountain;
+    if (climate.elevation > 0.66 or climate.ridge > 0.56) return .hills;
+    if (climate.moisture > 0.75 and climate.elevation < 0.47) return .marsh;
     if (climate.moisture > 0.61 + config.forest_threshold_offset and climate.elevation < 0.72) return .forest;
-    if (ruin_noise > 0.86 - config.ruin_bonus and climate.elevation > 0.38 and climate.elevation < 0.67) return .ruins;
+    if (ruin_noise > 0.88 - config.ruin_bonus and climate.elevation > 0.38 and climate.elevation < 0.67) return .ruins;
     return .plains;
 }
 
@@ -585,7 +669,7 @@ fn classifyBiome(region: Region, terrain: Terrain, elevation: u8, moisture: u8) 
     };
 }
 
-fn classifyCover(seed: u64, biome: Biome, terrain: Terrain, x: u16, y: u16, elevation: u8, moisture: u8) Cover {
+fn classifyCover(seed: u64, biome: Biome, terrain: Terrain, x: i32, y: i32, elevation: u8, moisture: u8) Cover {
     const detail = variationForCoord(seed ^ 0x91f24563dd8c27a1, x, y);
     const elevation_unit = byteToUnit(elevation);
     const moisture_unit = byteToUnit(moisture);
@@ -617,205 +701,83 @@ fn classifyCover(seed: u64, biome: Biome, terrain: Terrain, x: u16, y: u16, elev
     };
 }
 
-fn selectRegion(seed: u64, x: u16, y: u16) Region {
-    const fx = axisUnit(x, width_u16);
-    const fy = axisUnit(y, height_u16);
-    const warped_x = @as(f32, @floatFromInt(x)) + (fractalNoise(seed ^ 0x4b2a193df6ea10c5, fx * 2.0, fy * 2.0, 3, 2.0, 0.5) - 0.5) * 14.0;
-    const warped_y = @as(f32, @floatFromInt(y)) + (fractalNoise(seed ^ 0x2de9a95cd4f1b73f, fx * 2.0, fy * 2.0, 3, 2.0, 0.5) - 0.5) * 11.0;
-
-    var best = region_configs[0].region;
-    var best_score = std.math.inf(f32);
-
-    for (region_configs, 0..) |config, index| {
-        const dx = warped_x - @as(f32, @floatFromInt(config.anchor.x));
-        const dy = warped_y - @as(f32, @floatFromInt(config.anchor.y));
-        const distortion = (fractalNoise(seed +% (@as(u64, index + 1) *% 0x9e3779b97f4a7c15), fx * 4.5, fy * 4.5, 2, 2.0, 0.5) - 0.5) * 36.0;
-        const score = dx * dx + dy * dy + distortion;
-
-        if (score < best_score) {
-            best_score = score;
-            best = config.region;
-        }
-    }
-
-    return best;
+fn roadCenter(seed: u64, x: i32) f32 {
+    const fx = coordScale(x, 180.0);
+    const broad = (fractalNoise(seed ^ 0x8215f4206d55ca7d, fx * 0.90, 0.0, 3, 2.0, 0.5) - 0.5) * 54.0;
+    const detail = (fractalNoise(seed ^ 0x58c3db5129037e41, fx * 2.90, 0.0, 2, 2.0, 0.5) - 0.5) * 16.0;
+    return broad + detail;
 }
 
-fn chooseRiverOutlet(seed: u64, source: Coord, river_index: usize) Coord {
-    const jitter = hash01(seed +% (@as(u64, river_index) + 1) *% 0x5851f42d4c957f2d, source.x, source.y);
-    const vertical: i32 = if (jitter < 0.5) 1 else -1;
-    const drift = @as(i32, @intFromFloat((jitter - 0.5) * 18.0));
+fn roadDistance(seed: u64, x: i32, y: i32) f32 {
+    return @abs(@as(f32, @floatFromInt(y)) - roadCenter(seed, x));
+}
 
-    if (source.x > width_u16 / 2) {
-        return .{
-            .x = width_u16 - 1,
-            .y = clampCoord(source.y, vertical * 6 + drift, height_u16),
-        };
+fn riverStrength(seed: u64, x: i32, y: i32) f32 {
+    const fx = coordScale(x, 84.0);
+    const fy = coordScale(y, 84.0);
+    const warp_x = fx + (fractalNoise(seed ^ 0x1134fbc91c87dd21, fx * 1.10, fy * 1.10, 2, 2.0, 0.5) - 0.5) * 0.34;
+    const warp_y = fy + (fractalNoise(seed ^ 0x6d9c4d8e4d6f5177, fx * 1.10, fy * 1.10, 2, 2.0, 0.5) - 0.5) * 0.34;
+    const a = fractalNoise(seed ^ 0xa1f5267ec4fb0d4f, warp_x * 1.20, warp_y * 1.20, 3, 2.0, 0.5);
+    const b = fractalNoise(seed ^ 0xd5b2ad5213ef4cb9, warp_x * 0.62 + 11.7, warp_y * 0.62 - 7.3, 2, 2.0, 0.5);
+    const line = @abs(a - b);
+    return 1.0 - clamp01(line * 9.0);
+}
+
+fn rawAdjacentCount(seed: u64, x: i32, y: i32, terrain: Terrain) u8 {
+    var count: u8 = 0;
+    var dy: i32 = -1;
+    while (dy <= 1) : (dy += 1) {
+        var dx: i32 = -1;
+        while (dx <= 1) : (dx += 1) {
+            if (dx == 0 and dy == 0) continue;
+            if (sampleRawTile(seed, x + dx, y + dy).terrain == terrain) count += 1;
+        }
     }
-    if (source.y > height_u16 / 2) {
-        return .{
-            .x = clampCoord(source.x, drift, width_u16),
-            .y = height_u16 - 1,
-        };
+    return count;
+}
+
+fn countAdjacent(self: *World, coord: Coord, terrain: Terrain) u8 {
+    var count: u8 = 0;
+    var dy: i32 = -1;
+    while (dy <= 1) : (dy += 1) {
+        var dx: i32 = -1;
+        while (dx <= 1) : (dx += 1) {
+            if (dx == 0 and dy == 0) continue;
+            if (self.terrainAt(coord.x + dx, coord.y + dy) == terrain) count += 1;
+        }
     }
+    return count;
+}
+
+fn countAdjacentWalkable(self: *World, coord: Coord) u8 {
+    var count: u8 = 0;
+    var dy: i32 = -1;
+    while (dy <= 1) : (dy += 1) {
+        var dx: i32 = -1;
+        while (dx <= 1) : (dx += 1) {
+            if (dx == 0 and dy == 0) continue;
+            if (terrainWalkable(self.terrainAt(coord.x + dx, coord.y + dy))) count += 1;
+        }
+    }
+    return count;
+}
+
+fn chunkCoordForWorld(x: i32, y: i32) ChunkCoord {
     return .{
-        .x = 0,
-        .y = clampCoord(source.y, vertical * 5 + drift, height_u16),
+        .x = @divFloor(x, chunk_size_i32),
+        .y = @divFloor(y, chunk_size_i32),
     };
 }
 
-fn chooseRiverStep(self: *const World, current: Coord, outlet: Coord, visited: *const [height][width]bool) ?Coord {
-    const current_elevation = byteToUnit(self.tileAt(current.x, current.y).elevation);
-
-    var best: ?Coord = null;
-    var best_score = std.math.inf(f32);
-
-    var dy: i32 = -1;
-    while (dy <= 1) : (dy += 1) {
-        var dx: i32 = -1;
-        while (dx <= 1) : (dx += 1) {
-            if (dx == 0 and dy == 0) continue;
-
-            const nx_i = @as(i32, current.x) + dx;
-            const ny_i = @as(i32, current.y) + dy;
-            if (nx_i < 0 or ny_i < 0 or nx_i >= width_u16 or ny_i >= height_u16) continue;
-
-            const nx: u16 = @intCast(nx_i);
-            const ny: u16 = @intCast(ny_i);
-            if (visited[@as(usize, ny)][@as(usize, nx)]) continue;
-
-            const coord: Coord = .{ .x = nx, .y = ny };
-            const tile = self.tileAt(nx, ny);
-            if (tile.terrain == .water) return coord;
-            if (tile.terrain == .mountain) continue;
-
-            const elevation = byteToUnit(tile.elevation);
-            const distance = normalizedDistance(coord, outlet);
-            var score = elevation * 1.15 + distance * 0.75;
-
-            if (elevation > current_elevation) {
-                score += (elevation - current_elevation) * 2.6;
-            } else {
-                score -= @min(0.12, (current_elevation - elevation) * 0.9);
-            }
-
-            if (tile.terrain == .marsh or tile.terrain == .river) score -= 0.08;
-            if (tile.terrain == .ruins) score += 0.03;
-
-            if (score < best_score) {
-                best_score = score;
-                best = coord;
-            }
-        }
-    }
-
-    return best;
+fn localCoord(value: i32) usize {
+    return @intCast(@mod(value, chunk_size_i32));
 }
 
-fn insertRiverSource(sources: *[8]?Coord, scores: *[8]f32, coord: Coord, score: f32) void {
-    for (sources.*) |existing_opt| {
-        if (existing_opt) |existing| {
-            if (manhattan(coord, existing) < 24) return;
-        }
-    }
-
-    var target: ?usize = null;
-    var lowest_score = score;
-    for (scores.*, 0..) |existing_score, index| {
-        if (existing_score < lowest_score) {
-            lowest_score = existing_score;
-            target = index;
-        }
-    }
-
-    if (target) |index| {
-        sources[index] = coord;
-        scores[index] = score;
-    }
+fn coordScale(value: i32, scale: f32) f32 {
+    return @as(f32, @floatFromInt(value)) / scale;
 }
 
-fn countAdjacent(self: *const World, coord: Coord, terrain: Terrain) u8 {
-    var count: u8 = 0;
-    var dy: i32 = -1;
-    while (dy <= 1) : (dy += 1) {
-        var dx: i32 = -1;
-        while (dx <= 1) : (dx += 1) {
-            if (dx == 0 and dy == 0) continue;
-
-            const nx = @as(i32, coord.x) + dx;
-            const ny = @as(i32, coord.y) + dy;
-            if (nx < 0 or ny < 0 or nx >= width_u16 or ny >= height_u16) continue;
-
-            if (self.terrainAt(@intCast(nx), @intCast(ny)) == terrain) count += 1;
-        }
-    }
-    return count;
-}
-
-fn countAdjacentWalkable(self: *const World, coord: Coord) u8 {
-    var count: u8 = 0;
-    var dy: i32 = -1;
-    while (dy <= 1) : (dy += 1) {
-        var dx: i32 = -1;
-        while (dx <= 1) : (dx += 1) {
-            if (dx == 0 and dy == 0) continue;
-
-            const nx = @as(i32, coord.x) + dx;
-            const ny = @as(i32, coord.y) + dy;
-            if (nx < 0 or ny < 0 or nx >= width_u16 or ny >= height_u16) continue;
-
-            if (terrainWalkable(self.terrainAt(@intCast(nx), @intCast(ny)))) count += 1;
-        }
-    }
-    return count;
-}
-
-fn isLocalHighPoint(self: *const World, x: u16, y: u16) bool {
-    const center = self.tileAt(x, y).elevation;
-    var dy: i32 = -1;
-    while (dy <= 1) : (dy += 1) {
-        var dx: i32 = -1;
-        while (dx <= 1) : (dx += 1) {
-            if (dx == 0 and dy == 0) continue;
-
-            const nx = @as(i32, x) + dx;
-            const ny = @as(i32, y) + dy;
-            if (nx < 0 or ny < 0 or nx >= width_u16 or ny >= height_u16) continue;
-
-            if (self.tileAt(@intCast(nx), @intCast(ny)).elevation > center) return false;
-        }
-    }
-    return true;
-}
-
-fn manhattan(a: Coord, b: Coord) u16 {
-    const dx = if (a.x > b.x) a.x - b.x else b.x - a.x;
-    const dy = if (a.y > b.y) a.y - b.y else b.y - a.y;
-    return dx + dy;
-}
-
-fn normalizedDistance(a: Coord, b: Coord) f32 {
-    const dx = @as(f32, @floatFromInt(@abs(@as(i32, a.x) - @as(i32, b.x))));
-    const dy = @as(f32, @floatFromInt(@abs(@as(i32, a.y) - @as(i32, b.y))));
-    const world_dx = @as(f32, @floatFromInt(width_u16));
-    const world_dy = @as(f32, @floatFromInt(height_u16));
-    const diagonal = std.math.sqrt(world_dx * world_dx + world_dy * world_dy);
-    return std.math.sqrt(dx * dx + dy * dy) / diagonal;
-}
-
-fn axisUnit(value: u16, max_value: u16) f32 {
-    if (max_value <= 1) return 0.0;
-    return @as(f32, @floatFromInt(value)) / @as(f32, @floatFromInt(max_value - 1));
-}
-
-fn clampCoord(value: u16, delta: i32, max_exclusive: u16) u16 {
-    const shifted = @as(i32, value) + delta;
-    if (shifted <= 0) return 0;
-    if (shifted >= max_exclusive - 1) return max_exclusive - 1;
-    return @intCast(shifted);
-}
-
-fn variationForCoord(seed: u64, x: u16, y: u16) u8 {
+fn variationForCoord(seed: u64, x: i32, y: i32) u8 {
     return @intCast((mix(seed ^ 0x6a09e667f3bcc909, x, y) >> 56) & 0xff);
 }
 
@@ -894,12 +856,33 @@ fn mix(seed: u64, x: i32, y: i32) u64 {
     return value;
 }
 
-test "world generation is deterministic and feature-rich" {
-    const first = World.init(default_seed);
-    const second = World.init(default_seed);
+test "world generation stays deterministic across chunks" {
+    var first = try World.init(std.testing.allocator, default_seed);
+    defer first.deinit();
 
-    try std.testing.expectEqualDeep(first.tiles, second.tiles);
+    var second = try World.init(std.testing.allocator, default_seed);
+    defer second.deinit();
+
     try std.testing.expectEqual(first.spawn, second.spawn);
+    try std.testing.expectEqual(first.objective, second.objective);
+
+    const sample_points = [_]Coord{
+        .{ .x = -130, .y = -80 },
+        .{ .x = -64, .y = -1 },
+        .{ .x = 0, .y = 0 },
+        .{ .x = 63, .y = 64 },
+        .{ .x = 192, .y = -37 },
+        .{ .x = 287, .y = 144 },
+    };
+
+    for (sample_points) |coord| {
+        try std.testing.expectEqualDeep(first.tileAt(coord.x, coord.y), second.tileAt(coord.x, coord.y));
+    }
+}
+
+test "world generation remains feature rich near the starting frontier" {
+    var generated = try World.init(std.testing.allocator, default_seed);
+    defer generated.deinit();
 
     var water: usize = 0;
     var forest: usize = 0;
@@ -907,9 +890,16 @@ test "world generation is deterministic and feature-rich" {
     var mountain: usize = 0;
     var marsh_water: usize = 0;
     var plains_tree: usize = 0;
+    const sample_width: usize = 160;
+    const sample_height: usize = 120;
 
-    for (first.tiles) |row| {
-        for (row) |tile| {
+    var row: usize = 0;
+    while (row < sample_height) : (row += 1) {
+        const y = generated.spawn.y - 50 + @as(i32, @intCast(row));
+        var col: usize = 0;
+        while (col < sample_width) : (col += 1) {
+            const x = generated.spawn.x - 60 + @as(i32, @intCast(col));
+            const tile = generated.tileAt(x, y);
             switch (tile.terrain) {
                 .water => water += 1,
                 .forest => forest += 1,
@@ -922,14 +912,14 @@ test "world generation is deterministic and feature-rich" {
         }
     }
 
-    const total_tiles = width * height;
+    const total_tiles = sample_width * sample_height;
 
-    try std.testing.expect(water > total_tiles / 30);
-    try std.testing.expect(forest > total_tiles / 18);
-    try std.testing.expect(river > total_tiles / 250);
-    try std.testing.expect(mountain > total_tiles / 60);
-    try std.testing.expect(marsh_water > total_tiles / 400);
-    try std.testing.expect(plains_tree > total_tiles / 1000);
-    try std.testing.expect(terrainWalkable(first.terrainAt(first.spawn.x, first.spawn.y)));
-    try std.testing.expect(first.objective.x > first.spawn.x);
+    try std.testing.expect(water > total_tiles / 80);
+    try std.testing.expect(forest > total_tiles / 20);
+    try std.testing.expect(river > total_tiles / 280);
+    try std.testing.expect(mountain > total_tiles / 90);
+    try std.testing.expect(marsh_water > total_tiles / 700);
+    try std.testing.expect(plains_tree > total_tiles / 1400);
+    try std.testing.expect(terrainWalkable(generated.terrainAt(generated.spawn.x, generated.spawn.y)));
+    try std.testing.expect(generated.objective.x > generated.spawn.x);
 }

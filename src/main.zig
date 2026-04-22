@@ -34,7 +34,7 @@ pub fn main() !void {
     try vx.enterAltScreen(tty.writer());
     try vx.queryTerminal(tty.writer(), 1 * std.time.ns_per_s);
 
-    var state = game.Game.init(allocator);
+    var state = try game.Game.init(allocator);
     defer state.deinit();
 
     while (true) {

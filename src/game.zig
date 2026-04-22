@@ -2,8 +2,6 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const world = @import("world.zig");
 
-pub const world_width: u16 = world.width_u16;
-pub const world_height: u16 = world.height_u16;
 pub const max_hp: u16 = 30;
 pub const max_stamina: u16 = 18;
 
@@ -16,6 +14,11 @@ pub const inventory_items = [_][]const u8{
     "Amber vial",
 };
 
+pub const local_map_radius_x: i32 = 26;
+pub const local_map_radius_y: i32 = 15;
+pub const minimap_span_x: i32 = 224;
+pub const minimap_span_y: i32 = 144;
+
 const log_capacity = 16;
 const Message = struct {
     buf: [120]u8 = [_]u8{0} ** 120,
@@ -27,12 +30,13 @@ pub const Biome = world.Biome;
 pub const Cover = world.Cover;
 pub const Region = world.Region;
 pub const Tile = world.Tile;
+pub const Coord = world.Coord;
 
 pub const Game = struct {
     allocator: std.mem.Allocator,
     world: world.World,
-    player_x: u16 = world_width / 2,
-    player_y: u16 = world_height / 2,
+    player_x: i32 = 0,
+    player_y: i32 = 0,
     turn: u32 = 1,
     hp: u16 = 24,
     stamina: u16 = 14,
@@ -53,17 +57,19 @@ pub const Game = struct {
     gold_text_len: usize = 0,
     turn_text_buf: [12]u8 = undefined,
     turn_text_len: usize = 0,
-    coords_text_buf: [16]u8 = undefined,
+    coords_text_buf: [24]u8 = undefined,
     coords_text_len: usize = 0,
     current_tile_text_buf: [48]u8 = undefined,
     current_tile_text_len: usize = 0,
     current_detail_text_buf: [72]u8 = undefined,
     current_detail_text_len: usize = 0,
+    objective_text_buf: [96]u8 = undefined,
+    objective_text_len: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator) Game {
+    pub fn init(allocator: std.mem.Allocator) !Game {
         var self = Game{
             .allocator = allocator,
-            .world = world.World.init(world.randomSeed()),
+            .world = try world.World.init(allocator, world.randomSeed()),
             .command_input = vaxis.widgets.TextInput.init(allocator),
         };
 
@@ -79,6 +85,7 @@ pub const Game = struct {
 
     pub fn deinit(self: *Game) void {
         self.command_input.deinit();
+        self.world.deinit();
     }
 
     pub fn beginCommandMode(self: *Game) void {
@@ -104,13 +111,8 @@ pub const Game = struct {
     }
 
     pub fn moveBy(self: *Game, dx: i2, dy: i2) void {
-        const next_x = clampAxis(self.player_x, dx, world_width);
-        const next_y = clampAxis(self.player_y, dy, world_height);
-
-        if (next_x == self.player_x and next_y == self.player_y) {
-            self.pushMessage("The edge of the known world stops you.", .{});
-            return;
-        }
+        const next_x = offsetAxis(self.player_x, dx);
+        const next_y = offsetAxis(self.player_y, dy);
 
         const terrain = self.terrainAt(next_x, next_y);
         if (!terrainWalkable(terrain)) {
@@ -131,35 +133,35 @@ pub const Game = struct {
         self.refreshHudText();
     }
 
-    pub fn terrainAt(self: *const Game, x: u16, y: u16) Terrain {
+    pub fn terrainAt(self: *Game, x: i32, y: i32) Terrain {
         return self.world.terrainAt(x, y);
     }
 
-    pub fn tileAt(self: *const Game, x: u16, y: u16) Tile {
+    pub fn tileAt(self: *Game, x: i32, y: i32) Tile {
         return self.world.tileAt(x, y);
     }
 
-    pub fn biomeAt(self: *const Game, x: u16, y: u16) Biome {
+    pub fn biomeAt(self: *Game, x: i32, y: i32) Biome {
         return self.world.biomeAt(x, y);
     }
 
-    pub fn currentTerrain(self: *const Game) Terrain {
+    pub fn currentTerrain(self: *Game) Terrain {
         return self.terrainAt(self.player_x, self.player_y);
     }
 
-    pub fn currentBiome(self: *const Game) Biome {
+    pub fn currentBiome(self: *Game) Biome {
         return self.biomeAt(self.player_x, self.player_y);
     }
 
-    pub fn currentCover(self: *const Game) Cover {
+    pub fn currentCover(self: *Game) Cover {
         return self.tileAt(self.player_x, self.player_y).cover;
     }
 
-    pub fn currentRegion(self: *const Game) Region {
+    pub fn currentRegion(self: *Game) Region {
         return self.world.regionAt(self.player_x, self.player_y);
     }
 
-    pub fn regionAt(self: *const Game, x: u16, y: u16) Region {
+    pub fn regionAt(self: *Game, x: i32, y: i32) Region {
         return self.world.regionAt(x, y);
     }
 
@@ -173,17 +175,20 @@ pub const Game = struct {
         return self.messages[slot].buf[0..self.messages[slot].len];
     }
 
-    pub fn currentLandmark(self: *const Game) []const u8 {
+    pub fn currentLandmark(self: *Game) []const u8 {
         return world.regionInfo(self.currentRegion()).landmark;
     }
 
-    pub fn regionSummary(self: *const Game) []const u8 {
+    pub fn regionSummary(self: *Game) []const u8 {
         return world.regionInfo(self.currentRegion()).summary;
     }
 
     pub fn objective(self: *const Game) []const u8 {
-        _ = self;
-        return "Reach the Watcher's Spire by following the safer eastern roadbeds.";
+        return self.objective_text_buf[0..self.objective_text_len];
+    }
+
+    pub fn objectiveCoord(self: *const Game) Coord {
+        return self.world.objective;
     }
 
     pub fn commandHint(self: *const Game) []const u8 {
@@ -312,6 +317,10 @@ pub const Game = struct {
             biomeName(self.currentBiome()),
             coverName(self.currentCover()),
         }) catch unreachable).len;
+        self.objective_text_len = (std.fmt.bufPrint(&self.objective_text_buf, "Reach the Watcher's Spire near {d},{d}.", .{
+            self.world.objective.x,
+            self.world.objective.y,
+        }) catch unreachable).len;
     }
 };
 
@@ -339,13 +348,11 @@ fn movementCost(terrain: Terrain) u16 {
     return world.movementCost(terrain);
 }
 
-fn clampAxis(value: u16, delta: i2, max_exclusive: u16) u16 {
-    const max_index = max_exclusive - 1;
-
+fn offsetAxis(value: i32, delta: i2) i32 {
     return switch (delta) {
-        -1 => if (value == 0) 0 else value - 1,
+        -1 => value - 1,
         0 => value,
-        1 => if (value >= max_index) max_index else value + 1,
+        1 => value + 1,
         else => value,
     };
 }
