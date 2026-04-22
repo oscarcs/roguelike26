@@ -39,6 +39,7 @@ pub const Cover = enum(u8) {
     scrub,
     tree,
     reeds,
+    marsh_water,
     stones,
     rubble,
     current,
@@ -472,6 +473,7 @@ pub fn coverName(cover: Cover) []const u8 {
         .scrub => "scrub",
         .tree => "tree cover",
         .reeds => "reeds",
+        .marsh_water => "stagnant water",
         .stones => "stones",
         .rubble => "rubble",
         .current => "running water",
@@ -591,12 +593,12 @@ fn classifyCover(seed: u64, biome: Biome, terrain: Terrain, x: u16, y: u16, elev
     return switch (terrain) {
         .water => .deep_water,
         .river => .current,
-        .marsh => if (detail < 160) .reeds else .current,
+        .marsh => if (detail < 112) .reeds else if (detail < 224) .marsh_water else .current,
         .mountain => if (detail < 180) .stones else .bare,
         .ruins => if (detail < 150) .rubble else .stones,
         .hills => switch (biome) {
             .alpine => if (detail < 170) .stones else .bare,
-            .highlands => if (detail < 96) .short_grass else if (detail < 176) .stones else .scrub,
+            .highlands => if (detail < 84) .short_grass else if (detail < 104 and moisture_unit > 0.36) .tree else if (detail < 176) .stones else .scrub,
             else => if (detail < 128) .short_grass else .scrub,
         },
         .forest => switch (biome) {
@@ -605,10 +607,10 @@ fn classifyCover(seed: u64, biome: Biome, terrain: Terrain, x: u16, y: u16, elev
             else => if (detail < 176) .tree else if (detail < 220) .tall_grass else .scrub,
         },
         .plains => switch (biome) {
-            .meadow => if (detail < 80) .short_grass else if (detail < 150) .tall_grass else if (detail < 190 and moisture_unit > 0.40) .flowers else .scrub,
-            .steppe => if (detail < 96) .short_grass else if (detail < 210) .scrub else .bare,
-            .floodplain => if (detail < 120) .tall_grass else if (detail < 205) .reeds else .flowers,
-            .rocky_lowlands => if (detail < 90) .short_grass else if (detail < 180 or elevation_unit > 0.60) .stones else .scrub,
+            .meadow => if (detail < 76) .short_grass else if (detail < 136) .tall_grass else if (detail < 148 and moisture_unit > 0.40) .tree else if (detail < 190 and moisture_unit > 0.40) .flowers else .scrub,
+            .steppe => if (detail < 96) .short_grass else if (detail < 204) .scrub else if (detail < 212 and moisture_unit > 0.34) .tree else .bare,
+            .floodplain => if (detail < 112) .tall_grass else if (detail < 188) .reeds else if (detail < 214) .tree else .flowers,
+            .rocky_lowlands => if (detail < 90) .short_grass else if (detail < 108 and moisture_unit > 0.34 and elevation_unit < 0.60) .tree else if (detail < 180 or elevation_unit > 0.60) .stones else .scrub,
             .grove => if (detail < 104) .short_grass else if (detail < 168) .tall_grass else if (detail < 216) .tree else .flowers,
             else => if (detail < 128) .short_grass else .scrub,
         },
@@ -903,6 +905,8 @@ test "world generation is deterministic and feature-rich" {
     var forest: usize = 0;
     var river: usize = 0;
     var mountain: usize = 0;
+    var marsh_water: usize = 0;
+    var plains_tree: usize = 0;
 
     for (first.tiles) |row| {
         for (row) |tile| {
@@ -913,6 +917,8 @@ test "world generation is deterministic and feature-rich" {
                 .mountain => mountain += 1,
                 else => {},
             }
+            if (tile.cover == .marsh_water) marsh_water += 1;
+            if (tile.terrain == .plains and tile.cover == .tree) plains_tree += 1;
         }
     }
 
@@ -922,6 +928,8 @@ test "world generation is deterministic and feature-rich" {
     try std.testing.expect(forest > total_tiles / 18);
     try std.testing.expect(river > total_tiles / 250);
     try std.testing.expect(mountain > total_tiles / 60);
+    try std.testing.expect(marsh_water > total_tiles / 400);
+    try std.testing.expect(plains_tree > total_tiles / 1000);
     try std.testing.expect(terrainWalkable(first.terrainAt(first.spawn.x, first.spawn.y)));
     try std.testing.expect(first.objective.x > first.spawn.x);
 }

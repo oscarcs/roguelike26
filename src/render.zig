@@ -426,16 +426,20 @@ fn overworldCell(tile: game.Tile) vaxis.Cell {
             .style = .{ .fg = coverColor(tile, rgb(0x6e, 0x8d, 0x54), rgb(0x84, 0xa3, 0x63)) },
         },
         .tree => .{
-            .char = .{ .grapheme = "T", .width = 1 },
-            .style = .{ .fg = coverColor(tile, rgb(0x4a, 0x7c, 0x4f), rgb(0x5c, 0x93, 0x5f)), .bold = tile.biome == .deep_forest },
+            .char = .{ .grapheme = treeGlyph(tile), .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0x2d, 0x63, 0x33), rgb(0x3f, 0x7b, 0x43)), .bold = true },
         },
         .reeds => .{
             .char = .{ .grapheme = ",", .width = 1 },
             .style = .{ .fg = coverColor(tile, rgb(0x8f, 0xa7, 0x6a), rgb(0xa8, 0xb9, 0x77)) },
         },
+        .marsh_water => .{
+            .char = .{ .grapheme = "≈", .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0x5b, 0x87, 0x7e), rgb(0x72, 0x9e, 0x90)) },
+        },
         .stones => .{
-            .char = .{ .grapheme = ":", .width = 1 },
-            .style = .{ .fg = coverColor(tile, rgb(0xb3, 0xa0, 0x8a), rgb(0xc5, 0xb3, 0x9c)) },
+            .char = .{ .grapheme = stoneGlyph(tile), .width = 1 },
+            .style = .{ .fg = stoneColor(tile) },
         },
         .rubble => .{
             .char = .{ .grapheme = "#", .width = 1 },
@@ -451,8 +455,8 @@ fn overworldCell(tile: game.Tile) vaxis.Cell {
         },
         .bare => switch (tile.terrain) {
             .mountain => .{
-                .char = .{ .grapheme = "M", .width = 1 },
-                .style = .{ .fg = coverColor(tile, rgb(0xa8, 0x9b, 0x90), rgb(0xc0, 0xb2, 0xa5)), .bold = true },
+                .char = .{ .grapheme = mountainGlyph(tile), .width = 1 },
+                .style = .{ .fg = mountainColor(tile), .bold = true },
             },
             .hills => .{
                 .char = .{ .grapheme = "^", .width = 1 },
@@ -473,16 +477,16 @@ fn minimapCell(terrain: game.Terrain) vaxis.Cell {
             .style = .{ .fg = rgb(0x5d, 0x78, 0x4f) },
         },
         .forest => .{
-            .char = .{ .grapheme = "*", .width = 1 },
-            .style = .{ .fg = rgb(0x4d, 0x8a, 0x58) },
+            .char = .{ .grapheme = "♣", .width = 1 },
+            .style = .{ .fg = rgb(0x3e, 0x76, 0x46) },
         },
         .hills => .{
             .char = .{ .grapheme = "^", .width = 1 },
             .style = .{ .fg = rgb(0xaa, 0x86, 0x53) },
         },
         .marsh => .{
-            .char = .{ .grapheme = ",", .width = 1 },
-            .style = .{ .fg = rgb(0x81, 0x94, 0x6a) },
+            .char = .{ .grapheme = "≈", .width = 1 },
+            .style = .{ .fg = rgb(0x6c, 0x8f, 0x7f) },
         },
         .ruins => .{
             .char = .{ .grapheme = "#", .width = 1 },
@@ -497,10 +501,44 @@ fn minimapCell(terrain: game.Terrain) vaxis.Cell {
             .style = .{ .fg = rgb(0x4a, 0x76, 0xb5) },
         },
         .mountain => .{
-            .char = .{ .grapheme = "M", .width = 1 },
+            .char = .{ .grapheme = "▲", .width = 1 },
             .style = .{ .fg = rgb(0x92, 0x86, 0x7a) },
         },
     };
+}
+
+fn treeGlyph(tile: game.Tile) []const u8 {
+    return switch (tile.biome) {
+        .deep_forest => "♠",
+        .floodplain => "♣",
+        else => if (tile.variation < 128) "♣" else "♠",
+    };
+}
+
+fn stoneGlyph(tile: game.Tile) []const u8 {
+    if (tile.terrain == .mountain) {
+        return if (tile.variation < 128) "▴" else "▵";
+    }
+    return ":";
+}
+
+fn stoneColor(tile: game.Tile) vaxis.Color {
+    return switch (tile.terrain) {
+        .mountain => coverColor(tile, rgb(0x8f, 0x86, 0x81), rgb(0xa8, 0x9f, 0x98)),
+        else => coverColor(tile, rgb(0xb3, 0xa0, 0x8a), rgb(0xc5, 0xb3, 0x9c)),
+    };
+}
+
+fn mountainGlyph(tile: game.Tile) []const u8 {
+    if (tile.elevation > 224) return "▲";
+    return if (tile.variation < 96) "△" else if (tile.variation < 192) "▲" else "▵";
+}
+
+fn mountainColor(tile: game.Tile) vaxis.Color {
+    if (tile.elevation > 224) {
+        return coverColor(tile, rgb(0xbf, 0xb6, 0xae), rgb(0xd2, 0xc7, 0xbc));
+    }
+    return coverColor(tile, rgb(0x9f, 0x95, 0x8d), rgb(0xb6, 0xab, 0xa1));
 }
 
 fn coverColor(tile: game.Tile, base_a: vaxis.Color, base_b: vaxis.Color) vaxis.Color {
