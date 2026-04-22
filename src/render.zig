@@ -122,64 +122,30 @@ fn drawStatsPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void 
     drawValue(panel, &line, "Level", state.levelText());
     drawValue(panel, &line, "Gold", state.goldText());
     drawValue(panel, &line, "Turn", state.turnText());
-    drawValue(panel, &line, "Coords", state.coordsText());
-
-    line += 1;
-    _ = panel.printSegment(.{
-        .text = game.regionName(state.currentRegion()),
-        .style = .{ .fg = rgb(0xf5, 0xe9, 0x8a), .bold = true },
-    }, .{ .row_offset = line, .wrap = .word });
-    line += 2;
-
-    _ = panel.printSegment(.{
-        .text = state.regionSummary(),
-        .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
-    }, .{ .row_offset = line, .wrap = .word });
 }
 
 fn drawOverworld(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
     const panel = makePanel(root, rect, "Overworld", rgb(0xf5, 0xe9, 0x8a));
     if (panel.width == 0 or panel.height == 0) return;
 
-    const header = panel.child(.{ .width = panel.width, .height = 2 });
-    const region_result = header.printSegment(.{
-        .text = game.regionName(state.currentRegion()),
-        .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc), .bold = true },
-    }, .{ .row_offset = 0, .wrap = .none });
-    const separator_result = header.printSegment(.{
-        .text = "  |  tile: ",
-        .style = .{ .fg = rgb(0x88, 0x99, 0xaa) },
-    }, .{ .row_offset = 0, .col_offset = region_result.col, .wrap = .none });
-    _ = header.printSegment(.{
-        .text = game.terrainName(state.currentTerrain()),
-        .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc), .bold = true },
-    }, .{ .row_offset = 0, .col_offset = separator_result.col, .wrap = .none });
-    _ = header.printSegment(.{
-        .text = "Move to scout the route east. Water is blocked terrain.",
-        .style = .{ .fg = rgb(0x88, 0x99, 0xaa) },
-    }, .{ .row_offset = 1, .wrap = .word });
-
-    const map_y: u16 = 2;
-    const map_height = panel.height -| map_y -| 1;
-    if (map_height == 0) return;
-
     const map_view = panel.child(.{
-        .y_off = @intCast(map_y),
         .width = panel.width,
-        .height = map_height,
+        .height = panel.height,
     });
 
     const start_x = cameraOrigin(state.player_x, map_view.width, game.world_width);
     const start_y = cameraOrigin(state.player_y, map_view.height, game.world_height);
+    const visible_width = @min(map_view.width, game.world_width - start_x);
+    const visible_height = @min(map_view.height, game.world_height - start_y);
 
     var row: u16 = 0;
-    while (row < map_view.height) : (row += 1) {
+    while (row < visible_height) : (row += 1) {
         const world_y = start_y + row;
         var col: u16 = 0;
-        while (col < map_view.width) : (col += 1) {
+        while (col < visible_width) : (col += 1) {
             const world_x = start_x + col;
-            const terrain = state.terrainAt(world_x, world_y);
-            map_view.writeCell(col, row, terrainCell(terrain));
+            const tile = state.tileAt(world_x, world_y);
+            map_view.writeCell(col, row, overworldCell(tile));
         }
     }
 
@@ -195,16 +161,6 @@ fn drawOverworld(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
             },
         });
     }
-
-    const footer = panel.child(.{
-        .y_off = @intCast(panel.height -| 1),
-        .width = panel.width,
-        .height = 1,
-    });
-    _ = footer.printSegment(.{
-        .text = ". plains   * forest   ^ hills   , marsh   # ruins   ~ water",
-        .style = .{ .fg = rgb(0x88, 0x99, 0xaa) },
-    }, .{ .row_offset = 0, .wrap = .none });
 }
 
 fn drawMiniMap(root: vaxis.Window, state: *const game.Game, rect: Rect) void {
@@ -255,21 +211,28 @@ fn drawWorldPanel(root: vaxis.Window, state: *const game.Game, rect: Rect) void 
     const panel = makePanel(root, rect, "World Info", rgb(0xff, 0xa0, 0x7a));
 
     _ = panel.printSegment(.{
-        .text = "Objective",
+        .text = "Here",
         .style = .{ .fg = rgb(0xf5, 0xe9, 0x8a), .bold = true },
     }, .{ .row_offset = 0, .wrap = .none });
     _ = panel.printSegment(.{
-        .text = state.objective(),
+        .text = state.currentTileText(),
+        .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
     }, .{ .row_offset = 1, .wrap = .word });
 
     _ = panel.printSegment(.{
-        .text = "Terrain Note",
-        .style = .{ .fg = rgb(0xf5, 0xe9, 0x8a), .bold = true },
-    }, .{ .row_offset = 4, .wrap = .none });
-    _ = panel.printSegment(.{
-        .text = "Roads are implied by safe ground for now: plains, forest, ruins, and hills remain traversable.",
+        .text = state.currentDetailText(),
         .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
-    }, .{ .row_offset = 5, .wrap = .word });
+    }, .{ .row_offset = 2, .wrap = .word });
+
+    _ = panel.printSegment(.{
+        .text = state.coordsText(),
+        .style = .{ .fg = rgb(0x88, 0x99, 0xaa) },
+    }, .{ .row_offset = 3, .wrap = .none });
+
+    _ = panel.printSegment(.{
+        .text = "Goal: reach the spire to the east.",
+        .style = .{ .fg = rgb(0xc7, 0xd1, 0xdc) },
+    }, .{ .row_offset = 4, .wrap = .word });
 }
 
 fn drawLogPanel(root: vaxis.Window, state: *game.Game, rect: Rect) void {
@@ -444,31 +407,61 @@ fn cameraOrigin(player: u16, viewport: u16, world: u16) u16 {
     return player - half;
 }
 
-fn terrainCell(terrain: game.Terrain) vaxis.Cell {
-    return switch (terrain) {
-        .plains => .{
+fn overworldCell(tile: game.Tile) vaxis.Cell {
+    return switch (tile.cover) {
+        .short_grass => .{
             .char = .{ .grapheme = ".", .width = 1 },
-            .style = .{ .fg = rgb(0x78, 0x9b, 0x5f) },
+            .style = .{ .fg = coverColor(tile, rgb(0x7e, 0xa4, 0x61), rgb(0x8f, 0xc0, 0x69)) },
         },
-        .forest => .{
-            .char = .{ .grapheme = "*", .width = 1 },
-            .style = .{ .fg = rgb(0x4d, 0x8a, 0x58) },
+        .tall_grass => .{
+            .char = .{ .grapheme = "\"", .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0x86, 0xad, 0x68), rgb(0x9b, 0xc9, 0x72)) },
         },
-        .hills => .{
-            .char = .{ .grapheme = "^", .width = 1 },
-            .style = .{ .fg = rgb(0xb2, 0x92, 0x62) },
+        .flowers => .{
+            .char = .{ .grapheme = "'", .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0xd8, 0xd0, 0x80), rgb(0xf0, 0xe0, 0x95)) },
         },
-        .marsh => .{
+        .scrub => .{
+            .char = .{ .grapheme = ";", .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0x6e, 0x8d, 0x54), rgb(0x84, 0xa3, 0x63)) },
+        },
+        .tree => .{
+            .char = .{ .grapheme = "T", .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0x4a, 0x7c, 0x4f), rgb(0x5c, 0x93, 0x5f)), .bold = tile.biome == .deep_forest },
+        },
+        .reeds => .{
             .char = .{ .grapheme = ",", .width = 1 },
-            .style = .{ .fg = rgb(0x7f, 0xa0, 0x72) },
+            .style = .{ .fg = coverColor(tile, rgb(0x8f, 0xa7, 0x6a), rgb(0xa8, 0xb9, 0x77)) },
         },
-        .ruins => .{
+        .stones => .{
+            .char = .{ .grapheme = ":", .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0xb3, 0xa0, 0x8a), rgb(0xc5, 0xb3, 0x9c)) },
+        },
+        .rubble => .{
             .char = .{ .grapheme = "#", .width = 1 },
-            .style = .{ .fg = rgb(0xc0, 0xb7, 0xa2) },
+            .style = .{ .fg = coverColor(tile, rgb(0xb4, 0xaa, 0x92), rgb(0xcd, 0xc3, 0xaa)) },
         },
-        .water => .{
+        .current => .{
+            .char = .{ .grapheme = "=", .width = 1 },
+            .style = .{ .fg = coverColor(tile, rgb(0x72, 0xb3, 0xdc), rgb(0x86, 0xc8, 0xee)) },
+        },
+        .deep_water => .{
             .char = .{ .grapheme = "~", .width = 1 },
-            .style = .{ .fg = rgb(0x5b, 0x90, 0xd6) },
+            .style = .{ .fg = coverColor(tile, rgb(0x56, 0x88, 0xca), rgb(0x67, 0x9c, 0xe2)) },
+        },
+        .bare => switch (tile.terrain) {
+            .mountain => .{
+                .char = .{ .grapheme = "M", .width = 1 },
+                .style = .{ .fg = coverColor(tile, rgb(0xa8, 0x9b, 0x90), rgb(0xc0, 0xb2, 0xa5)), .bold = true },
+            },
+            .hills => .{
+                .char = .{ .grapheme = "^", .width = 1 },
+                .style = .{ .fg = coverColor(tile, rgb(0xa8, 0x8d, 0x65), rgb(0xc2, 0xa2, 0x74)) },
+            },
+            else => .{
+                .char = .{ .grapheme = "_", .width = 1 },
+                .style = .{ .fg = coverColor(tile, rgb(0x91, 0x87, 0x6d), rgb(0xab, 0x9f, 0x80)) },
+            },
         },
     };
 }
@@ -495,11 +488,23 @@ fn minimapCell(terrain: game.Terrain) vaxis.Cell {
             .char = .{ .grapheme = "#", .width = 1 },
             .style = .{ .fg = rgb(0xa6, 0x9d, 0x89) },
         },
+        .river => .{
+            .char = .{ .grapheme = "=", .width = 1 },
+            .style = .{ .fg = rgb(0x68, 0xa6, 0xd8) },
+        },
         .water => .{
             .char = .{ .grapheme = "~", .width = 1 },
             .style = .{ .fg = rgb(0x4a, 0x76, 0xb5) },
         },
+        .mountain => .{
+            .char = .{ .grapheme = "M", .width = 1 },
+            .style = .{ .fg = rgb(0x92, 0x86, 0x7a) },
+        },
     };
+}
+
+fn coverColor(tile: game.Tile, base_a: vaxis.Color, base_b: vaxis.Color) vaxis.Color {
+    return if (tile.variation < 128) base_a else base_b;
 }
 
 fn rgb(r: u8, g: u8, b: u8) vaxis.Color {

@@ -1,8 +1,9 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
+const world = @import("world.zig");
 
-pub const world_width: u16 = 96;
-pub const world_height: u16 = 64;
+pub const world_width: u16 = world.width_u16;
+pub const world_height: u16 = world.height_u16;
 pub const max_hp: u16 = 30;
 pub const max_stamina: u16 = 18;
 
@@ -21,25 +22,15 @@ const Message = struct {
     len: usize = 0,
 };
 
-pub const Terrain = enum {
-    plains,
-    forest,
-    hills,
-    marsh,
-    ruins,
-    water,
-};
-
-pub const Region = enum {
-    ember_fields,
-    mistwood,
-    glass_marsh,
-    iron_ridge,
-    dusk_road,
-};
+pub const Terrain = world.Terrain;
+pub const Biome = world.Biome;
+pub const Cover = world.Cover;
+pub const Region = world.Region;
+pub const Tile = world.Tile;
 
 pub const Game = struct {
     allocator: std.mem.Allocator,
+    world: world.World,
     player_x: u16 = world_width / 2,
     player_y: u16 = world_height / 2,
     turn: u32 = 1,
@@ -64,17 +55,20 @@ pub const Game = struct {
     turn_text_len: usize = 0,
     coords_text_buf: [16]u8 = undefined,
     coords_text_len: usize = 0,
+    current_tile_text_buf: [48]u8 = undefined,
+    current_tile_text_len: usize = 0,
+    current_detail_text_buf: [72]u8 = undefined,
+    current_detail_text_len: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) Game {
         var self = Game{
             .allocator = allocator,
+            .world = world.World.init(world.randomSeed()),
             .command_input = vaxis.widgets.TextInput.init(allocator),
         };
 
-        if (!terrainWalkable(self.terrainAt(self.player_x, self.player_y))) {
-            self.player_x = 8;
-            self.player_y = 8;
-        }
+        self.player_x = self.world.spawn.x;
+        self.player_y = self.world.spawn.y;
 
         self.refreshHudText();
         self.pushMessage("The expedition enters the overworld at first light.", .{});
@@ -135,28 +129,38 @@ pub const Game = struct {
         }
 
         self.refreshHudText();
-        self.pushMessage("Turn {d}: you cross into {s}.", .{
-            self.turn,
-            terrainName(terrain),
-        });
     }
 
     pub fn terrainAt(self: *const Game, x: u16, y: u16) Terrain {
-        _ = self;
-        return terrainForCoord(x, y);
+        return self.world.terrainAt(x, y);
+    }
+
+    pub fn tileAt(self: *const Game, x: u16, y: u16) Tile {
+        return self.world.tileAt(x, y);
+    }
+
+    pub fn biomeAt(self: *const Game, x: u16, y: u16) Biome {
+        return self.world.biomeAt(x, y);
     }
 
     pub fn currentTerrain(self: *const Game) Terrain {
         return self.terrainAt(self.player_x, self.player_y);
     }
 
+    pub fn currentBiome(self: *const Game) Biome {
+        return self.biomeAt(self.player_x, self.player_y);
+    }
+
+    pub fn currentCover(self: *const Game) Cover {
+        return self.tileAt(self.player_x, self.player_y).cover;
+    }
+
     pub fn currentRegion(self: *const Game) Region {
-        return regionForCoord(self.player_x, self.player_y);
+        return self.world.regionAt(self.player_x, self.player_y);
     }
 
     pub fn regionAt(self: *const Game, x: u16, y: u16) Region {
-        _ = self;
-        return regionForCoord(x, y);
+        return self.world.regionAt(x, y);
     }
 
     pub fn logCount(self: *const Game) usize {
@@ -170,28 +174,16 @@ pub const Game = struct {
     }
 
     pub fn currentLandmark(self: *const Game) []const u8 {
-        return switch (self.currentRegion()) {
-            .ember_fields => "Sunwheel stones on the western rise",
-            .mistwood => "A watchfire hidden beneath the pines",
-            .glass_marsh => "The broken ferry half-swallowed by reeds",
-            .iron_ridge => "A signal tower above the shale path",
-            .dusk_road => "The Watcher's Spire on the horizon",
-        };
+        return world.regionInfo(self.currentRegion()).landmark;
     }
 
     pub fn regionSummary(self: *const Game) []const u8 {
-        return switch (self.currentRegion()) {
-            .ember_fields => "Open grasslands with long sightlines and scattered ruins.",
-            .mistwood => "Dense tree cover muffles sound and hides narrow trails.",
-            .glass_marsh => "Wet ground slows travel while drowned paths split and rejoin.",
-            .iron_ridge => "Hard ridges and switchbacks reward careful route planning.",
-            .dusk_road => "Ancient stonework hints at a safer passage east.",
-        };
+        return world.regionInfo(self.currentRegion()).summary;
     }
 
     pub fn objective(self: *const Game) []const u8 {
         _ = self;
-        return "Reach the Watcher's Spire and chart a safe approach.";
+        return "Reach the Watcher's Spire by following the safer eastern roadbeds.";
     }
 
     pub fn commandHint(self: *const Game) []const u8 {
@@ -221,6 +213,14 @@ pub const Game = struct {
 
     pub fn coordsText(self: *const Game) []const u8 {
         return self.coords_text_buf[0..self.coords_text_len];
+    }
+
+    pub fn currentTileText(self: *const Game) []const u8 {
+        return self.current_tile_text_buf[0..self.current_tile_text_len];
+    }
+
+    pub fn currentDetailText(self: *const Game) []const u8 {
+        return self.current_detail_text_buf[0..self.current_detail_text_len];
     }
 
     fn submitCommand(self: *Game) !void {
@@ -305,80 +305,38 @@ pub const Game = struct {
             self.player_x,
             self.player_y,
         }) catch unreachable).len;
+        self.current_tile_text_len = (std.fmt.bufPrint(&self.current_tile_text_buf, "{s}", .{
+            terrainName(self.currentTerrain()),
+        }) catch unreachable).len;
+        self.current_detail_text_len = (std.fmt.bufPrint(&self.current_detail_text_buf, "{s} / {s}", .{
+            biomeName(self.currentBiome()),
+            coverName(self.currentCover()),
+        }) catch unreachable).len;
     }
 };
 
 pub fn terrainName(terrain: Terrain) []const u8 {
-    return switch (terrain) {
-        .plains => "open plains",
-        .forest => "mistwood",
-        .hills => "iron hills",
-        .marsh => "glass marsh",
-        .ruins => "fallen ruins",
-        .water => "deep water",
-    };
+    return world.terrainName(terrain);
 }
 
 pub fn regionName(region: Region) []const u8 {
-    return switch (region) {
-        .ember_fields => "Ember Fields",
-        .mistwood => "Mistwood",
-        .glass_marsh => "Glass Marsh",
-        .iron_ridge => "Iron Ridge",
-        .dusk_road => "Dusk Road",
-    };
+    return world.regionInfo(region).name;
+}
+
+pub fn biomeName(biome: Biome) []const u8 {
+    return world.biomeName(biome);
+}
+
+pub fn coverName(cover: Cover) []const u8 {
+    return world.coverName(cover);
 }
 
 pub fn terrainWalkable(terrain: Terrain) bool {
-    return terrain != .water;
-}
-
-fn terrainForCoord(x: u16, y: u16) Terrain {
-    const region = regionForCoord(x, y);
-    const sample = hash2d(x / 2, y / 2) % 100;
-
-    return switch (region) {
-        .ember_fields => if (sample < 8) .ruins else if (sample < 18) .hills else .plains,
-        .mistwood => if (sample < 10) .water else if (sample < 72) .forest else .plains,
-        .glass_marsh => if (sample < 26) .water else if (sample < 82) .marsh else .plains,
-        .iron_ridge => if (sample < 18) .forest else if (sample < 80) .hills else .ruins,
-        .dusk_road => if (sample < 12) .water else if (sample < 34) .ruins else if (sample < 58) .hills else .plains,
-    };
-}
-
-fn regionForCoord(x: u16, y: u16) Region {
-    const band_x = x * 5 / world_width;
-    const band_y = y * 4 / world_height;
-    const selector = (band_x + band_y * 2 + hash2d(x / 12, y / 10)) % 5;
-
-    return switch (selector) {
-        0 => .ember_fields,
-        1 => .mistwood,
-        2 => .glass_marsh,
-        3 => .iron_ridge,
-        else => .dusk_road,
-    };
+    return world.terrainWalkable(terrain);
 }
 
 fn movementCost(terrain: Terrain) u16 {
-    return switch (terrain) {
-        .marsh, .hills => 2,
-        else => 1,
-    };
-}
-
-fn hash2d(x: u16, y: u16) u16 {
-    var value: u32 = @as(u32, x);
-    value *%= 0x045d9f3b;
-
-    var y_mix: u32 = @as(u32, y);
-    y_mix *%= 0x119de1f3;
-    value +%= y_mix;
-
-    value ^= value >> 16;
-    value *%= 0x45d9f3b;
-    value ^= value >> 15;
-    return @intCast(value & 0xffff);
+    return world.movementCost(terrain);
 }
 
 fn clampAxis(value: u16, delta: i2, max_exclusive: u16) u16 {
