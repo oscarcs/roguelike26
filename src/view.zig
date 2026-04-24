@@ -90,8 +90,8 @@ pub fn buildInto(summary: *Summary, state: *game.Game) void {
     summary.command_hint = if (state.command_mode)
         "Enter submits. Esc cancels."
     else
-        "g picks up, e interacts, : opens commands.";
-    summary.command_placeholder = "look / rest / pickup / interact / use 4";
+        "q/g picks up, e interacts, 1-0 uses inventory, : commands.";
+    summary.command_placeholder = "look / rest / pickup / interact / use 4 / quit";
 
     summary.inventory_len = state.inventoryCount();
     var i: usize = 0;
@@ -144,7 +144,7 @@ test "inventory summary formats starter kit entries" {
     const presentation = cache.present(&state);
 
     try std.testing.expectEqual(@as(usize, 6), presentation.summary.inventory_len);
-    try std.testing.expectEqualStrings("1. Iron sword", presentation.summary.inventory_lines[0].slice());
-    try std.testing.expectEqualStrings("4. Bandage roll [use]", presentation.summary.inventory_lines[3].slice());
-    try std.testing.expectEqualStrings("6. Amber vial [use]", presentation.summary.inventory_lines[5].slice());
+    try std.testing.expectEqualStrings("1. Survey blade", presentation.summary.inventory_lines[0].slice());
+    try std.testing.expectEqualStrings("4. Med gel [use]", presentation.summary.inventory_lines[3].slice());
+    try std.testing.expectEqualStrings("6. Lumen cell [use]", presentation.summary.inventory_lines[5].slice());
 }

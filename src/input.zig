@@ -29,7 +29,7 @@ pub const ParsedCommand = union(enum) {
 };
 
 pub fn actionForKey(key: vaxis.Key) Intent {
-    if (key.matches('c', .{ .ctrl = true }) or key.matches('q', .{})) {
+    if (key.matches('c', .{ .ctrl = true })) {
         return .quit;
     }
     if (key.matches('l', .{ .ctrl = true })) {
@@ -38,8 +38,11 @@ pub fn actionForKey(key: vaxis.Key) Intent {
     if (key.matches(':', .{}) or key.matches('/', .{})) {
         return .start_command;
     }
-    if (key.matches('g', .{})) {
+    if (key.matches('g', .{}) or key.matches('q', .{})) {
         return .pick_up;
+    }
+    if (numberSlotForKey(key)) |slot| {
+        return .{ .use_item_slot = slot };
     }
     if (key.matches('e', .{})) {
         return .interact;
@@ -60,6 +63,20 @@ pub fn actionForKey(key: vaxis.Key) Intent {
         return .{ .move = .{ .dx = 1, .dy = 0 } };
     }
     return .none;
+}
+
+fn numberSlotForKey(key: vaxis.Key) ?usize {
+    if (key.matches('1', .{})) return 0;
+    if (key.matches('2', .{})) return 1;
+    if (key.matches('3', .{})) return 2;
+    if (key.matches('4', .{})) return 3;
+    if (key.matches('5', .{})) return 4;
+    if (key.matches('6', .{})) return 5;
+    if (key.matches('7', .{})) return 6;
+    if (key.matches('8', .{})) return 7;
+    if (key.matches('9', .{})) return 8;
+    if (key.matches('0', .{})) return 9;
+    return null;
 }
 
 pub fn actionForCommand(command: []const u8) ParsedCommand {
@@ -97,4 +114,14 @@ pub fn actionForCommand(command: []const u8) ParsedCommand {
 fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
     if (haystack.len < prefix.len) return false;
     return std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
+}
+
+test "q is a pickup shortcut, not quit" {
+    try std.testing.expectEqual(Intent.pick_up, actionForKey(.{ .codepoint = 'q' }));
+}
+
+test "number keys use inventory slots" {
+    try std.testing.expectEqual(@as(usize, 0), actionForKey(.{ .codepoint = '1' }).use_item_slot);
+    try std.testing.expectEqual(@as(usize, 4), actionForKey(.{ .codepoint = '5' }).use_item_slot);
+    try std.testing.expectEqual(@as(usize, 9), actionForKey(.{ .codepoint = '0' }).use_item_slot);
 }

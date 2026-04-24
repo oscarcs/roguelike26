@@ -725,7 +725,7 @@ fn classifyCover(seed: u64, biome: Biome, terrain: Terrain, x: i32, y: i32, elev
         .river => .current,
         .marsh => if (detail < 112) .reeds else if (detail < 224) .marsh_water else .current,
         .mountain => if (detail < 180) .stones else .bare,
-        .ruins => if (detail < 150) .rubble else .stones,
+        .ruins => if (detail < 42) .bare else if (detail < 138) .rubble else if (detail < 218) .stones else .scrub,
         .hills => switch (biome) {
             .alpine => if (detail < 170) .stones else .bare,
             .highlands => if (detail < 84) .short_grass else if (detail < 104 and moisture_unit > 0.36) .tree else if (detail < 176) .stones else .scrub,

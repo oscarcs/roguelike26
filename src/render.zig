@@ -136,7 +136,9 @@ fn drawOverworld(root: vaxis.Window, presentation: view.Presentation, rect: Rect
             const world_x = start_x + @as(i32, @intCast(col));
             const tile = state.tileAt(world_x, world_y);
             var cell = overworldCell(tile);
-            if (state.featureAt(world_x, world_y)) |feature| {
+            if (state.encounterAt(world_x, world_y)) |encounter| {
+                cell = encounterCell(encounter);
+            } else if (state.featureAt(world_x, world_y)) |feature| {
                 cell = featureCell(feature);
             } else if (state.groundItemAt(world_x, world_y)) |item| {
                 cell = itemCell(item);
@@ -472,7 +474,7 @@ fn overworldCell(tile: game.Tile) vaxis.Cell {
             .style = .{ .fg = stoneColor(tile) },
         },
         .rubble => .{
-            .char = .{ .grapheme = "#", .width = 1 },
+            .char = .{ .grapheme = rubbleGlyph(tile), .width = 1 },
             .style = .{ .fg = coverColor(tile, rgb(0xb4, 0xaa, 0x92), rgb(0xcd, 0xc3, 0xaa)) },
         },
         .current => .{
@@ -493,7 +495,7 @@ fn overworldCell(tile: game.Tile) vaxis.Cell {
                 .style = .{ .fg = coverColor(tile, rgb(0xa8, 0x8d, 0x65), rgb(0xc2, 0xa2, 0x74)) },
             },
             else => .{
-                .char = .{ .grapheme = "_", .width = 1 },
+                .char = .{ .grapheme = bareGlyph(tile), .width = 1 },
                 .style = .{ .fg = coverColor(tile, rgb(0x91, 0x87, 0x6d), rgb(0xab, 0x9f, 0x80)) },
             },
         },
@@ -555,6 +557,18 @@ fn itemCell(item: game.InventoryEntry) vaxis.Cell {
     };
 }
 
+fn encounterCell(encounter: game.Encounter) vaxis.Cell {
+    return .{
+        .char = .{ .grapheme = game.encounterGlyph(encounter.kind), .width = 1 },
+        .style = switch (encounter.kind) {
+            .scavenger => .{ .fg = rgb(0xff, 0xb0, 0x7a), .bold = true },
+            .survey_drone => .{ .fg = rgb(0x89, 0xdb, 0xff), .bold = true },
+            .patrol_light => .{ .fg = rgb(0xff, 0xf7, 0x9a), .bold = true },
+            .vault_guardian => .{ .fg = rgb(0xff, 0x7d, 0x7d), .bold = true },
+        },
+    };
+}
+
 fn treeGlyph(tile: game.Tile) []const u8 {
     return switch (tile.biome) {
         .deep_forest => "♠",
@@ -567,7 +581,22 @@ fn stoneGlyph(tile: game.Tile) []const u8 {
     if (tile.terrain == .mountain) {
         return if (tile.variation < 128) "▴" else "▵";
     }
+    if (tile.terrain == .ruins) {
+        return if (tile.variation < 96) ":" else if (tile.variation < 160) "+" else "'";
+    }
     return ":";
+}
+
+fn rubbleGlyph(tile: game.Tile) []const u8 {
+    if (tile.terrain == .ruins) {
+        return if (tile.variation < 64) "#" else if (tile.variation < 128) "=" else if (tile.variation < 192) "|" else "+";
+    }
+    return "#";
+}
+
+fn bareGlyph(tile: game.Tile) []const u8 {
+    if (tile.terrain == .ruins) return ".";
+    return "_";
 }
 
 fn stoneColor(tile: game.Tile) vaxis.Color {
