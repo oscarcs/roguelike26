@@ -1,3 +1,7 @@
+This is a roguelike game project in Zig and vaxis.
+
+The game setting is in the ruins of an highly technologically advanced civilisation.
+
 Don't create new branches or pull requests unless explicitly instructed to. Just push directly to the main branch when requested to commit and push.
 
 Run the actual game to verify changes to the UI:
@@ -6,3 +10,5 @@ Run the actual game to verify changes to the UI:
 - The game can be inspected from that PTY output stream, and input can be sent the same way.
 - Use `q` or `Ctrl-C` to exit the running game session.
 - Use a terminal resolution of approx 188x57 as that is what it looks like on my screen
+
+It's 2026 and coding agents can write thousands of lines of good code per hour now - be ambitious with making changes.
